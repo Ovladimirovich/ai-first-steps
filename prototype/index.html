@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Первые шаги в ИИ — прототип сцен</title>
+<style>
+  :root{--bg:#1B2A4A;--teal:#2EE6D6;--yellow:#FFD23F;--coral:#FF6B6B;--white:#F4F6FA}
+  *{box-sizing:border-box}
+  body{margin:0;background:#0d1526;font-family:Arial,Helvetica,sans-serif;color:var(--white);display:flex;flex-direction:column;align-items:center;padding:16px;gap:12px}
+  #stage{position:relative;width:960px;height:540px;background:var(--bg);border-radius:12px;overflow:hidden;box-shadow:0 10px 40px #0008}
+  .layer{position:absolute;inset:0}
+  .scene{position:absolute;inset:0;opacity:0;transition:opacity .4s}
+  .scene.active{opacity:1}
+  .title{position:absolute;top:28px;left:0;right:0;text-align:center;font-weight:800;font-size:30px;letter-spacing:.5px}
+  .card{position:absolute;background:#243A66;border-radius:16px;padding:18px 22px;font-size:22px;line-height:1.3;box-shadow:0 6px 20px #0006;opacity:0;transform:translateY(20px) scale(.95)}
+  .card.in{animation:pop .5s cubic-bezier(.2,1.4,.4,1) forwards}
+  .hl{color:var(--yellow);font-weight:800}
+  @keyframes pop{to{opacity:1;transform:none}}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+  @keyframes blink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.1)}}
+  @keyframes glow{0%,100%{opacity:.4}50%{opacity:1}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes grow{from{width:0}to{width:var(--w)}}
+  .bit{position:absolute;animation:float 3s ease-in-out infinite}
+  .bit .eye{transform-origin:center;animation:blink 4s infinite}
+  .bit .lamp{animation:glow 1.6s infinite}
+  .masha{position:absolute}
+  .bar{height:26px;background:var(--teal);border-radius:6px;animation:grow 1s .3s ease-out both}
+  #subs{position:absolute;bottom:22px;left:60px;right:60px;text-align:center;font-size:24px;line-height:1.3;pointer-events:none}
+  #subs span{background:#000a;padding:6px 14px;border-radius:8px;display:inline-block}
+  #subs .who{color:var(--teal);font-weight:700;margin-right:6px}
+  #subs .m .who{color:var(--coral)}
+  #ctl{display:flex;gap:10px;align-items:center;width:960px;flex-wrap:wrap}
+  button{background:#243A66;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px}
+  button:hover{background:#2f4b84}
+  #tc{font-variant-numeric:tabular-nums;color:var(--teal);min-width:110px}
+  #timeline{flex:1;height:8px;background:#243A66;border-radius:4px;position:relative;cursor:pointer}
+  #prog{height:100%;background:var(--teal);border-radius:4px;width:0}
+  #list{width:960px;font-size:13px;color:#aab;display:flex;gap:6px;flex-wrap:wrap}
+  #list button{padding:4px 8px;font-size:12px}
+  .noise{position:absolute;left:560px;top:120px;width:300px;height:300px;border-radius:14px;overflow:hidden;background:#000}
+  .noise canvas{width:100%;height:100%}
+  .knob{position:absolute;width:38px;height:38px;border-radius:50%;background:#3a5590;border:3px solid var(--teal)}
+  .knob::after{content:"";position:absolute;left:50%;top:3px;width:3px;height:14px;background:var(--yellow);margin-left:-1.5px;transform-origin:1.5px 14px;animation:spin 2.2s linear infinite}
+</style>
+</head>
+<body>
+<div id="stage">
+  <!-- СЦЕНА 0.1 -->
+  <div class="scene" id="s0">
+    <div class="title">0.1 · Кот-космонавт</div>
+    <div class="card" style="left:90px;top:150px;width:360px;background:#111c33;font-family:monospace;font-size:20px">
+      › нарисуй кота-космонавта на Луне<span id="cursor">▌</span>
+    </div>
+    <svg class="card" id="catpic" style="left:540px;top:110px;width:320px;height:320px;padding:0;background:#000" viewBox="0 0 320 320">
+      <rect width="320" height="320" fill="#060a1a"/>
+      <circle cx="250" cy="70" r="30" fill="#ddd"/>
+      <ellipse cx="160" cy="290" rx="200" ry="60" fill="#8d8d9c"/>
+      <circle cx="160" cy="170" r="70" fill="#dff6ff" opacity=".35" stroke="#fff" stroke-width="4"/>
+      <circle cx="160" cy="175" r="42" fill="#f2a65a"/>
+      <polygon points="125,150 135,115 155,145" fill="#f2a65a"/><polygon points="195,150 185,115 165,145" fill="#f2a65a"/>
+      <circle cx="145" cy="172" r="5"/><circle cx="175" cy="172" r="5"/>
+      <path d="M152 188 q8 8 16 0" stroke="#000" stroke-width="3" fill="none"/>
+      <rect x="115" y="235" width="90" height="50" rx="14" fill="#fff"/>
+    </svg>
+  </div>
+
+  <!-- СЦЕНА 1.1 -->
+  <div class="scene" id="s1">
+    <div class="title">1.1 · Рецепт</div>
+    <div class="card" style="left:70px;top:120px;width:360px">
+      <div style="font-weight:800;color:var(--yellow);margin-bottom:8px">📖 Обычная программа</div>
+      1. Взять яйцо<br>2. Разбить<br>3. Жарить 3 минуты
+    </div>
+    <div class="card" style="left:70px;top:330px;width:360px;background:#3a2a4a">🧮 Калькулятор: 2 + 2 = 4. <span class="hl">Всегда.</span></div>
+  </div>
+
+  <!-- СЦЕНА 1.3 -->
+  <div class="scene" id="s2">
+    <div class="title">1.3 · Учимся на примерах</div>
+    <div class="card" style="left:60px;top:110px;width:420px;font-size:46px;text-align:center;font-weight:800;color:var(--teal)"><span id="counter">10</span><div style="font-size:18px;color:#fff;font-weight:400">фотографий</div></div>
+    <div class="card" id="animals" style="left:60px;top:260px;width:420px;font-size:40px;letter-spacing:10px;text-align:center">🐱🐶🐱🐱🐶🐱🐶🐶</div>
+    <div class="card" style="left:60px;top:380px;width:420px">ИИ — программа, которая <span class="hl">учится на примерах</span></div>
+  </div>
+
+  <!-- СЦЕНА 2.2 -->
+  <div class="scene" id="s3">
+    <div class="title">2.2 · Пульт с ручками</div>
+    <div id="knobs" style="position:absolute;left:60px;top:110px;width:440px;height:360px"></div>
+    <div class="card" style="left:60px;top:430px;width:440px;font-size:20px">Ручек не десять… <span class="hl">миллиарды</span></div>
+  </div>
+
+  <!-- СЦЕНА 2.3 -->
+  <div class="scene" id="s4">
+    <div class="title">2.3 · Угадай слово</div>
+    <div class="card" style="left:60px;top:120px;width:440px;font-size:34px;font-weight:800">Мама мыла <span class="hl">…</span></div>
+    <div class="card" style="left:60px;top:220px;width:440px;font-size:20px">
+      <div style="display:flex;align-items:center;gap:10px;margin:8px 0"><span style="width:90px">раму</span><div class="bar" style="--w:260px"></div><b>87%</b></div>
+      <div style="display:flex;align-items:center;gap:10px;margin:8px 0"><span style="width:90px">посуду</span><div class="bar" style="--w:30px;background:var(--yellow)"></div><b>9%</b></div>
+      <div style="display:flex;align-items:center;gap:10px;margin:8px 0"><span style="width:90px">слона</span><div class="bar" style="--w:4px;background:var(--coral)"></div><b>0,1%</b></div>
+    </div>
+  </div>
+
+  <!-- СЦЕНА 4.1 -->
+  <div class="scene" id="s5">
+    <div class="title">4.1 · Три карточки</div>
+    <div class="card" style="left:40px;top:120px;width:270px;height:300px;background:#1f5e46"><b style="font-size:26px">ChatGPT</b><br><small>OpenAI · США · 2022</small><br><br>🧠 GPT-6<br>🗣 десятки языков<br>🚫 в России официально нет</div>
+    <div class="card" style="left:345px;top:120px;width:270px;height:300px;background:#4a2f7a"><b style="font-size:26px">Алиса AI</b><br><small>Яндекс · Россия · 2017</small><br><br>🔊 колонка, телефон, браузер<br>🖼 рисует · 🚕 вызывает такси</div>
+    <div class="card" style="left:650px;top:120px;width:270px;height:300px;background:#1f5a5a"><b style="font-size:26px">GigaChat</b><br><small>Сбер · Россия · 2023</small><br><br>📄 русские тексты<br>🎨 Kandinsky: картинки + видео</div>
+    <div class="card" style="left:40px;top:440px;width:880px;text-align:center">Внутри у всех — <span class="hl">языковая модель</span>. Разные марки, один мотор.</div>
+  </div>
+
+  <!-- СЦЕНА 5.2 -->
+  <div class="scene" id="s6">
+    <div class="title">5.2 · Из шума</div>
+    <div class="card" style="left:60px;top:130px;width:440px">Промпт: <span class="hl">«кот-космонавт на Луне»</span></div>
+    <div class="card" style="left:60px;top:220px;width:440px;font-size:20px">Шаг <b id="step">1</b> / 50<div style="height:10px;background:#1B2A4A;border-radius:5px;margin-top:8px"><div id="stepbar" style="height:100%;width:0;background:var(--teal);border-radius:5px"></div></div></div>
+    <div class="card" style="left:60px;top:330px;width:440px">Начинаем с <span class="hl">чистого шума</span> и шаг за шагом его убираем</div>
+    <div class="noise"><canvas id="nz" width="150" height="150"></canvas></div>
+  </div>
+
+  <!-- ПЕРСОНАЖИ (общий слой) -->
+  <div class="layer" id="chars" style="pointer-events:none">
+    <svg class="bit" id="bit" style="left:560px;top:280px;width:200px;height:200px" viewBox="0 0 200 200">
+      <line x1="100" y1="40" x2="100" y2="12" stroke="#2EE6D6" stroke-width="6"/>
+      <circle class="lamp" cx="100" cy="12" r="10" fill="#FFD23F"/>
+      <rect x="30" y="40" width="140" height="120" rx="28" fill="#2EE6D6"/>
+      <rect x="48" y="60" width="104" height="70" rx="14" fill="#0d1526"/>
+      <rect class="eye" x="68" y="80" width="18" height="24" rx="4" fill="#2EE6D6"/>
+      <rect class="eye" x="114" y="80" width="18" height="24" rx="4" fill="#2EE6D6"/>
+      <path d="M80 115 q20 12 40 0" stroke="#2EE6D6" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <rect x="60" y="160" width="26" height="22" rx="6" fill="#1aa89c"/><rect x="114" y="160" width="26" height="22" rx="6" fill="#1aa89c"/>
+    </svg>
+    <svg class="masha" id="masha" style="left:760px;top:250px;width:160px;height:240px" viewBox="0 0 160 240">
+      <ellipse cx="80" cy="232" rx="50" ry="8" fill="#0006"/>
+      <rect x="45" y="110" width="70" height="90" rx="20" fill="#FF6B6B"/>
+      <rect x="55" y="195" width="20" height="40" rx="6" fill="#3b4a7a"/><rect x="85" y="195" width="20" height="40" rx="6" fill="#3b4a7a"/>
+      <circle cx="80" cy="70" r="38" fill="#f6d2b8"/>
+      <path d="M42 70 q0 -45 38 -45 q38 0 38 45 q-10 -20 -38 -20 q-28 0 -38 20z" fill="#5a3a2a"/>
+      <circle cx="66" cy="72" r="4"/><circle cx="94" cy="72" r="4"/>
+      <path d="M68 88 q12 10 24 0" stroke="#000" stroke-width="3" fill="none"/>
+      <rect x="100" y="135" width="34" height="46" rx="4" fill="#111c33" stroke="#aab" stroke-width="2"/>
+    </svg>
+  </div>
+
+  <div id="subs"></div>
+</div>
+
+<div id="ctl">
+  <button id="play">▶ Играть</button>
+  <button id="prev">⟵</button><button id="next">⟶</button>
+  <span id="tc">00:00 / 00:00</span>
+  <div id="timeline"><div id="prog"></div></div>
+</div>
+<div id="list"></div>
+
+<script>
+// ---- Сценарный таймлайн прототипа (секунды внутри прототипа, не финальные таймкоды) ----
+const scenes=[
+ {id:'s0',name:'0.1 Кот-космонавт',tc:'0:00',subs:[
+   [0,'m','Серьёзно? Я просто написала «кот-космонавт» — и он его нарисовал. Сам?!'],
+   [4,'b','Ну… почти сам. Хочешь, расскажу, как это работает?'],
+   [7,'m','Только без лекций.'],[8.5,'b','Обещаю. Будет как игра.']],dur:11,bit:{l:560,t:300},masha:{l:300,t:270}},
+ {id:'s1',name:'1.1 Рецепт',tc:'0:35',subs:[
+   [0,'b','Обычная программа — это рецепт. Человек заранее написал все шаги, и компьютер их просто выполняет.'],
+   [5,'m','Как калькулятор.'],[6.5,'b','Точно! Калькулятор никогда не задумывается. Два плюс два — четыре. Всегда.']],dur:11},
+ {id:'s2',name:'1.3 Учимся на примерах',tc:'1:25',subs:[
+   [0,'b','Показать десять тысяч фотографий и каждый раз говорить — это кошка, а это собака.'],
+   [5,'m','То есть она учится?'],[6.5,'b','Да. ИИ — программа, которая не выполняет готовые правила, а учится на примерах.']],dur:11},
+ {id:'s3',name:'2.2 Пульт с ручками',tc:'2:38',subs:[
+   [0,'b','Внутри — ручки. Каждая чуть-чуть меняет ответ. Только ручек не десять…'],
+   [4.5,'m','А сколько?'],[5.5,'b','Миллиарды.'],[7,'m','…Ладно, я бы такой пульт потеряла.']],dur:10},
+ {id:'s4',name:'2.3 Угадай слово',tc:'3:15',subs:[
+   [0,'b','Языковые модели учили на одной игре: угадай следующее слово. Мама мыла…'],
+   [4.5,'m','Раму!'],[5.5,'b','Видишь, ты тоже модель.']],dur:9},
+ {id:'s5',name:'4.1 Три карточки',tc:'4:45',subs:[
+   [0,'m','ChatGPT, Алиса, GigaChat — это одно и то же?'],
+   [3,'b','И да, и нет. Внутри у всех — языковая модель. Но сделали их разные компании и приделали разные «руки и ноги».']],dur:10,bit:{l:600,t:440},masha:{l:800,t:430}},
+ {id:'s6',name:'5.2 Из шума',tc:'7:00',subs:[
+   [0,'b','Она начинает с чистого шума — как сломанный телевизор. И шаг за шагом убирает шум…'],
+   [6,'m','Как фотография проявляется!'],[8,'b','Только фотографии не существовало — модель её придумала.']],dur:11}
+];
+let cur=0,t=0,playing=false,last=0;
+const $=s=>document.querySelector(s);
+const total=scenes.reduce((a,s)=>a+s.dur,0);
+const fmt=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+
+// knobs
+const K=$('#knobs');for(let i=0;i<48;i++){const k=document.createElement('div');k.className='knob';k.style.left=(i%8)*54+'px';k.style.top=Math.floor(i/8)*54+'px';k.style.animationDelay=(i*.07)+'s';k.style.transform=`scale(${1-Math.floor(i/8)*.08})`;K.appendChild(k)}
+// noise canvas
+const nz=$('#nz').getContext('2d');const cat=new Image();
+function drawNoise(p){ // p 0..1 = how clean
+  const img=nz.createImageData(150,150);const d=img.data;
+  for(let i=0;i<d.length;i+=4){const x=(i/4)%150,y=Math.floor(i/4/150);
+    let r=6,g=10,b=26; const dx=x-75,dy=y-80;
+    if(dx*dx+dy*dy<1600){r=242;g=166;b=90} // cat head
+    if(dx*dx+dy*dy<3000&&dx*dx+dy*dy>2300){r=255;g=255;b=255}
+    if(y>130){r=141;g=141;b=156}
+    if((x-120)**2+(y-30)**2<180){r=g=b=221}
+    const n=(Math.random()*255);const mix=1-p;
+    d[i]=r*(1-mix)+n*mix;d[i+1]=g*(1-mix)+n*mix;d[i+2]=b*(1-mix)+n*mix;d[i+3]=255}
+  nz.putImageData(img,0,0)}
+
+function show(i,reset=true){
+  cur=i;if(reset)t=0;
+  document.querySelectorAll('.scene').forEach(s=>s.classList.remove('active'));
+  const sc=scenes[i],el=document.getElementById(sc.id);el.classList.add('active');
+  el.querySelectorAll('.card').forEach((c,j)=>{c.classList.remove('in');void c.offsetWidth;c.style.animationDelay=(j*.35)+'s';c.classList.add('in')});
+  const b=sc.bit||{l:560,t:280},m=sc.masha||{l:760,t:250};
+  $('#bit').style.left=b.l+'px';$('#bit').style.top=b.t+'px';$('#masha').style.left=m.l+'px';$('#masha').style.top=m.t+'px';
+  document.querySelectorAll('#list button').forEach((x,j)=>x.style.background=j===i?'#2EE6D6':'');
+  document.querySelectorAll('#list button').forEach((x,j)=>x.style.color=j===i?'#000':'');
+}
+function tick(now){
+  if(playing){const dt=(now-last)/1000;t+=dt;if(t>=scenes[cur].dur){if(cur<scenes.length-1)show(cur+1);else{playing=false;$('#play').textContent='▶ Играть'}}}
+  last=now;
+  const sc=scenes[cur];
+  // subs
+  let line=null;for(const s of sc.subs){if(t>=s[0])line=s}
+  $('#subs').innerHTML=line?`<span class="${line[1]}"><span class="who">${line[1]==='b'?'Бит:':'Маша:'}</span>${line[2]}</span>`:'';
+  // per-scene dynamics
+  if(sc.id==='s0'){$('#catpic').style.opacity=Math.min(1,Math.max(0,(t-1)/2));$('#catpic').style.filter=`blur(${Math.max(0,8-(t-1)*4)}px)`}
+  if(sc.id==='s2'){$('#counter').textContent=Math.min(10000,Math.round(10*Math.pow(1000,Math.min(1,t/6)))).toLocaleString('ru')}
+  if(sc.id==='s6'){const p=Math.min(1,t/8);$('#step').textContent=Math.round(1+49*p);$('#stepbar').style.width=(p*100)+'%';drawNoise(p*p)}
+  const el=scenes.slice(0,cur).reduce((a,s)=>a+s.dur,0)+t;
+  $('#tc').textContent=`${fmt(el)} / ${fmt(total)}  · сцена ${sc.tc}`;$('#prog').style.width=(el/total*100)+'%';
+  requestAnimationFrame(tick)}
+$('#play').onclick=()=>{playing=!playing;$('#play').textContent=playing?'❚❚ Пауза':'▶ Играть'};
+$('#next').onclick=()=>show(Math.min(cur+1,scenes.length-1));
+$('#prev').onclick=()=>show(Math.max(cur-1,0));
+$('#timeline').onclick=e=>{const r=e.currentTarget.getBoundingClientRect();let x=(e.clientX-r.left)/r.width*total;let i=0;while(i<scenes.length-1&&x>scenes[i].dur){x-=scenes[i].dur;i++}show(i);t=x};
+scenes.forEach((s,i)=>{const b=document.createElement('button');b.textContent=s.name;b.onclick=()=>show(i);$('#list').appendChild(b)});
+document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();$('#play').click()}if(e.code==='ArrowRight')$('#next').click();if(e.code==='ArrowLeft')$('#prev').click()});
+show(0);requestAnimationFrame(n=>{last=n;tick(n)});
+</script>
+</body>
+</html>
