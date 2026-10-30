@@ -22,8 +22,6 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: arena/750486c0-ai-first-steps
 
       - uses: actions/setup-node@v4
         with:
