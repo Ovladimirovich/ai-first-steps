@@ -44,3 +44,17 @@ Remotion 1920x1080 11550 frames crf18 concurrency1 → ~50 мин (чанкам�
 ```
 
 На твоём `Xeon E5-2650 v2 8c/32ГБ` FFmpeg будет ~3 мин ultrafast, Remotion ~20 мин с `--concurrency 4`.
+
+### Конструктор новых тем
+
+```bash
+python tools/new_topic.py "Зачем математика в 5 классе" --scenes 5
+# → script/lines_zachem-matematika-v-5-klasse.json (57 реплик шаблон)
+# → assets/audio/voice-zachem-matematika-v-5-klasse/ (папка для TTS)
+# → script/scenario_zachem-matematika-v-5-klasse.md
+# далее:
+python tools/build_pixar_real_timeline.py --lines script/lines_zachem-matematika-v-5-klasse.json --voice assets/audio/voice-zachem-matematika-v-5-klasse --out remotion/public/timing-zachem-matematika-v-5-klasse.json
+python tools/build_ffmpeg_video.py --motion 3 --use-workshop-bg --output release/zachem-matematika-v-5-klasse_motion.mp4 --crf 18 --preset medium
+```
+
+Пер-сценные фоны: положи `assets/pixar/scene_1.1.jpg` … `scene_8.2.jpg` 1920×1080 — подхватятся автоматом. Персонажи `bit.png`/`masha.png` 400×400 PNG с прозрачностью — наложатся с `parallax` (Бит покачивается).
