@@ -120,6 +120,121 @@ def wrap_text(text, font, max_width, draw):
         lines.append(cur)
     return lines
 
+def spring_value(frame, fps=30, damping=13, stiffness=140, mass=1):
+    """Пружина как в Remotion: spring({frame, fps, config: {damping, stiffness}}).
+    Даёт 0→1 с лёгким overshoot. frame может быть отрицательным -> 0."""
+    if frame <= 0:
+        return 0.0
+    # быстрая оценка: если frame большой — уже 1
+    if frame > fps * 2:
+        return 1.0
+    dt = 1.0 / fps
+    x = 0.0
+    v = 0.0
+    target = 1.0
+    # простое интегрирование, достаточно для 30fps
+    for _ in range(int(frame)):
+        # F = -k*(x - target) - c*v
+        force = -stiffness * (x - target) - damping * v
+        a = force / mass
+        v += a * dt
+        x += v * dt
+    # clamp с разрешённым небольшим перелётом как в Remotion
+    if x < 0: return 0.0
+    if x > 1.04: return 1.04
+    return x
+
+def draw_pixar_frame(text, who, scene, s, W=1920, H=1080, bg_img=None):
+    """Рисует кадр с учётом пружины s (0→1): карточка едет снизу + scale + opacity.
+    bg_img — уже подготовленный фон 1920x1080 (PIL), чтобы не пересоздавать."""
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    # клон фона
+    img = bg_img.copy()
+    draw = ImageDraw.Draw(img, "RGBA")
+    # заголовок уже на фоне, но для gap не рисуем карточку
+    if text == "" or s <= 0.001:
+        return img.convert("RGB")
+    # карточка параметры с пружиной
+    card_w = 1400
+    font_body = get_font(40)
+    font_who = get_font(32, bold=True)
+    max_text_w = card_w - 76
+    tmp = Image.new("RGB", (W,H))
+    tmp_draw = ImageDraw.Draw(tmp)
+    who_label = "БИТ" if who == "b" else "МАША"
+    lines = wrap_text(text, font_body, max_text_w, tmp_draw)
+    line_h = 52
+    text_h = len(lines) * line_h
+    card_h = 100 + text_h + 30
+    card_h = max(180, min(card_h, 560))
+    base_x = (W - card_w)//2
+    base_y = (H - card_h)//2 + 30
+    # spring трансформ
+    y_off = (1 - s) * 36
+    scale = 0.92 + 0.08 * s
+    opacity = int(255 * min(1, s))
+    # центр карточки для scale
+    cx, cy = base_x + card_w/2, base_y + card_h/2
+    # размер после scale
+    sw, sh = int(card_w * scale), int(card_h * scale)
+    sx = int(cx - sw/2)
+    sy = int(cy - sh/2 + y_off)
+    # тень (рисуем под карточкой, с учётом opacity)
+    shadow = Image.new("RGBA", (W, H), (0,0,0,0))
+    sdraw = ImageDraw.Draw(shadow)
+    sdraw.rounded_rectangle([sx+18, sy+18, sx+sw+18, sy+sh+18], radius=int(28*scale), fill=(0,0,0, int(58* s)))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(int(16*scale) if scale>0.5 else 8))
+    img = Image.alpha_composite(img.convert("RGBA"), shadow).convert("RGB")
+    draw = ImageDraw.Draw(img, "RGBA")
+    # карточка с opacity
+    card_rgb = hex_to_rgb("#243A66")
+    # делаем карточку полупрозрачной на старте
+    # рисуем через отдельный слой для opacity
+    card_layer = Image.new("RGBA", (W, H), (0,0,0,0))
+    cdraw = ImageDraw.Draw(card_layer)
+    cdraw.rounded_rectangle([sx, sy, sx+sw, sy+sh], radius=int(28*scale), fill=card_rgb+(opacity,), outline=(255,255,255, int(22*s)), width=1)
+    # блик
+    cdraw.rounded_rectangle([sx+int(18*scale), sy, sx+sw-int(18*scale), sy+int(18*scale)], radius=8, fill=(255,255,255, int(36*s)))
+    cdraw.rounded_rectangle([sx, sy+sh-int(14*scale), sx+sw, sy+sh], radius=int(28*scale), fill=(0,0,0, int(38*s)))
+    img = Image.alpha_composite(img.convert("RGBA"), card_layer).convert("RGB")
+    draw = ImageDraw.Draw(img, "RGBA")
+    # аватар и текст — внутри масштабированной карточки, пересчитываем координаты
+    # для простоты рисуем аватар и текст без дополнительного scale, но с opacity
+    avatar_r = int(36*scale)
+    ax = sx + int(30*scale)
+    ay = sy + int(28*scale)
+    who_col = P["teal"] if who == "b" else P["coral"]
+    who_rgb = hex_to_rgb(who_col)
+    draw.ellipse([ax, ay, ax+avatar_r*2, ay+avatar_r*2], fill=who_rgb+(opacity,), outline=(255,255,255, int(40*s)), width=2)
+    letter = "B" if who == "b" else "M"
+    font_letter = get_font(int(36*scale), bold=True)
+    bbox_l = draw.textbbox((0,0), letter, font=font_letter)
+    lx = ax + avatar_r - (bbox_l[2]-bbox_l[0])//2
+    ly = ay + avatar_r - (bbox_l[3]-bbox_l[1])//2 -2
+    draw.text((lx, ly), letter, font=font_letter, fill=(255,255,255, opacity))
+    draw.text((ax+avatar_r*2+int(16*scale), ay+int(18*scale)), who_label, font=font_who, fill=(255,255,255, int(230*s)))
+    tx0 = sx + int(38*scale)
+    ty0 = sy + int(88*scale)
+    for i, line in enumerate(lines):
+        y = ty0 + int(i*line_h*scale)
+        # уменьшаем шрифт под scale
+        # используем тот же font_body но рисуем меньше — для простоты оставим 40*scale
+        # пересоздадим шрифт под scale
+        f = get_font(int(40*scale))
+        draw.text((tx0+1, y+1), line, font=f, fill=(0,0,0, int(40*s)))
+        draw.text((tx0, y), line, font=f, fill=(244,246,250, opacity))
+    # прогресс
+    pw = int(card_w * 0.72 * scale)
+    px = sx + (sw - pw)//2
+    py = sy + sh - int(18*scale)
+    draw.rounded_rectangle([px, py, px+pw, py+int(6*scale)], radius=3, fill=(255,255,255, int(28*s)))
+    try:
+        scene_idx = list(SCENE_TITLES.keys()).index(scene)
+        prog = (scene_idx+1)/len(SCENE_TITLES)
+    except: prog = 0.5
+    draw.rounded_rectangle([px, py, px+int(pw*prog), py+int(6*scale)], radius=3, fill=hex_to_rgb(P["yellow"])+(opacity,))
+    return img
+
 def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=False):
     """
     Рисует 1920x1080 кадр в стиле PixarCard через Pillow:
@@ -274,6 +389,8 @@ def main():
     ap.add_argument("--only", type=int, default=0, help="только первые N реплик (для теста)")
     ap.add_argument("--width", type=int, default=1920)
     ap.add_argument("--height", type=int, default=1080)
+    ap.add_argument("--motion", type=int, default=0, choices=[0,1,2,3], help="0 статика 3-5мин, 1 лёгкий зум, 2 средний, 3 full spring 30fps 12-15мин")
+    ap.add_argument("--use-workshop-bg", action="store_true", help="использовать мастерскую pixar-style-preview.jpg как фон (картинка, а не облака)")
     args = ap.parse_args()
 
     if args.preview:
@@ -307,9 +424,48 @@ def main():
 
     # фон картинка если есть
     bg_path = None
-    for p in [ASSETS / "classroom_pixar.jpg", ASSETS / "clouds_pixar_bg.jpg", ROOT/"remotion/public/pixar/clouds_pixar_bg.jpg"]:
-        if p.exists():
-            bg_path = p; break
+    if args.use_workshop_bg:
+        for p in [ROOT / "pixar-style-preview.jpg", ROOT / "assets/pixar/classroom_pixar.jpg"]:
+            if p.exists():
+                bg_path = p; break
+    if bg_path is None:
+        for p in [ASSETS / "classroom_pixar.jpg", ASSETS / "clouds_pixar_bg.jpg", ROOT/"remotion/public/pixar/clouds_pixar_bg.jpg"]:
+            if p.exists():
+                bg_path = p; break
+    # для motion 3 подготовим базовый фон 1920x1080 один раз
+    base_bg_img = None
+    if args.motion == 3:
+        from PIL import Image
+        bg_rgb = hex_to_rgb(P["bg"])
+        base_bg_img = Image.new("RGB", (W, H), bg_rgb)
+        if bg_path and bg_path.exists():
+            try:
+                bg_tmp = Image.open(bg_path).convert("RGB").resize((W, H), Image.LANCZOS)
+                if args.use_workshop_bg:
+                    # для мастерской — почти непрозрачно, чуть затемняем низ для карточки
+                    base_bg_img = bg_tmp
+                    # затемнение низа 35% для читаемости
+                    overlay = Image.new("RGBA", (W, H), (0,0,0,0))
+                    ddraw = ImageDraw.Draw(overlay, "RGBA")
+                    for yy in range(int(H*0.55), H):
+                        alpha = int(90 * (yy - H*0.55) / (H*0.45))
+                        ddraw.line([(0, yy), (W, yy)], fill=(0,0,0,alpha))
+                    base_bg_img = Image.alpha_composite(base_bg_img.convert("RGBA"), overlay).convert("RGB")
+                    # заголовок уже на фоне мастерской не нужен отдельный — но оставим
+                else:
+                    base_bg_img = Image.blend(base_bg_img, bg_tmp, 0.18)
+            except: pass
+        else:
+            # градиент
+            draw0 = ImageDraw.Draw(base_bg_img, "RGBA")
+            for y in range(H):
+                t = y / H
+                r = int(bg_rgb[0] * (1 - t*0.04))
+                g = int(bg_rgb[1] * (1 - t*0.04))
+                b = int(bg_rgb[2] * (1 - t*0.02))
+                draw0.line([(0, y), (W, y)], fill=(r,g,b))
+        # заголовки на базовом фоне не рисуем — они будут на каждом кадре отдельно? для простоты добавим заголовок в base_bg? нет, заголовок меняется по сцене, поэтому оставим base без заголовка
+        print(f"фон для motion3: {bg_path} workshop={args.use_workshop_bg}")
 
     # готовим сегменты: реплика + пауза
     segments = []  # list of (type, text, who, scene, dur)
@@ -332,27 +488,140 @@ def main():
 
     print(f"сегментов: {len(segments)} (реплик {len(lines)} + паузы {len(segments)-len(lines)}) суммарно {sum(s[4] for s in segments):.1f}s / {total:.1f}s")
 
-    # проверяем зависимости
+    # проверяем зависимости - Pillow всегда, moviepy только для статики
     try:
-        from PIL import Image
+        from PIL import Image, ImageDraw, ImageFilter
     except ImportError:
-        print("ставлю Pillow..."); os.system(f"{sys.executable} -m pip install -q Pillow")
+        print("ставлю Pillow..."); os.system(f"{sys.executable} -m pip install --break-system-packages -q Pillow")
+        from PIL import Image, ImageDraw, ImageFilter
+
+    import tempfile, numpy as np, subprocess, shutil
+    tmpdir = Path(tempfile.mkdtemp(prefix="pixar_ffmpeg_"))
+    print(f"tmp {tmpdir} — motion={args.motion} рендерю {len(segments)} сегментов...")
+
+    if args.motion == 3:
+        # FULL SPRING 30fps — генерим каждый кадр, потом ffmpeg
         from PIL import Image
+        try:
+            import imageio_ffmpeg
+            FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+        except:
+            FFMPEG = "ffmpeg"
+        frames_dir = tmpdir / "frames"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        total_frames = int(total * fps)
+        print(f"FULL MOTION: {total_frames} кадров {W}x{H} {fps}fps (~12-15 мин), фон workshop={args.use_workshop_bg}")
+        # подготовим заголовки по сценам для каждого сегмента
+        # для каждого сегмента генерим кадры с s = spring(frame_in_seg)
+        frame_idx = 0
+        for seg_i, (typ, text, who, scene, dur) in enumerate(segments):
+            n_frames = int(round(dur * fps))
+            if n_frames == 0:
+                continue
+            # для gap — просто фон с заголовком
+            if typ == "gap":
+                # один кадр фона с заголовком, дублируем
+                # сгенерим один gap-кадр и скопируем
+                gap_img = draw_pixar_image("", "b", scene, W=W, H=H, bg_path=bg_path, is_gap=True)
+                # но если workshop — используем base_bg_img + заголовок
+                if args.use_workshop_bg and base_bg_img is not None:
+                    # gap с workshop фоном — просто base + заголовок
+                    gap_img = base_bg_img.copy()
+                    d = ImageDraw.Draw(gap_img, "RGBA")
+                    title = SCENE_TITLES.get(scene, f"Сцена {scene}")
+                    font_title = get_font(58, bold=True)
+                    bbox = d.textbbox((0,0), title, font=font_title)
+                    tx = (W - (bbox[2]-bbox[0]))//2
+                    d.text((tx+2, 44+3), title, font=font_title, fill=(0,0,0,70))
+                    d.text((tx, 44), title, font=font_title, fill=(255,255,255) if args.use_workshop_bg else (27,42,74))
+                    font_hint = get_font(28)
+                    hint = "— пауза —"
+                    bbox2 = d.textbbox((0,0), hint, font=font_hint)
+                    d.text(((W-bbox2[2])//2, H//2), hint, font=font_hint, fill=(255,255,255,180) if args.use_workshop_bg else (27,42,74,120))
+                gap_path = tmpdir / f"gap_{seg_i}.jpg"
+                gap_img.save(gap_path, "JPEG", quality=92)
+                for _ in range(n_frames):
+                    # копируем один и тот же файл (быстро через ссылку)
+                    dst = frames_dir / f"frame_{frame_idx:06d}.jpg"
+                    shutil.copy(gap_path, dst)
+                    frame_idx += 1
+                if seg_i % 10 == 0:
+                    print(f"  gap {seg_i+1}/{len(segments)} {scene} {dur:.2f}s -> {n_frames} кадров")
+            else:
+                # line — с пружиной
+                for f in range(n_frames):
+                    s = spring_value(f, fps=fps, damping=13, stiffness=140)
+                    # фон: либо base_bg_img (workshop) либо свежий градиент/облака
+                    if args.use_workshop_bg and base_bg_img is not None:
+                        # для workshop — каждый кадр это base_bg + карточка с s + заголовок
+                        # заголовок уже на base? нет, рисуем заголовок каждый кадр
+                        frame_img = base_bg_img.copy()
+                        d = ImageDraw.Draw(frame_img, "RGBA")
+                        title = SCENE_TITLES.get(scene, f"Сцена {scene}")
+                        font_title = get_font(58, bold=True)
+                        bbox = d.textbbox((0,0), title, font=font_title)
+                        tx = (W - (bbox[2]-bbox[0]))//2
+                        d.text((tx+2, 44+3), title, font=font_title, fill=(0,0,0,70))
+                        d.text((tx, 44), title, font=font_title, fill=(255,255,255))
+                        # карточка с пружиной поверх
+                        frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=frame_img)
+                    else:
+                        # облака — генерим фон каждый кадр? слишком долго, используем base_bg без заголовка + карточка
+                        # но base_bg без заголовка — добавим заголовок
+                        if base_bg_img is not None:
+                            frame_img = base_bg_img.copy()
+                            d = ImageDraw.Draw(frame_img, "RGBA")
+                            title = SCENE_TITLES.get(scene, f"Сцена {scene}")
+                            font_title = get_font(58, bold=True)
+                            bbox = d.textbbox((0,0), title, font=font_title)
+                            tx = (W - (bbox[2]-bbox[0]))//2
+                            d.text((tx+2, 44+3), title, font=font_title, fill=(0,0,0,70))
+                            d.text((tx, 44), title, font=font_title, fill=(27,42,74))
+                            frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=frame_img)
+                        else:
+                            # fallback — старый draw_pixar_image но с s
+                            # для простоты — используем draw_pixar_image для каждого кадра (медленнее)
+                            frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=Image.new("RGB", (W,H), hex_to_rgb(P["bg"])))
+                    dst = frames_dir / f"frame_{frame_idx:06d}.jpg"
+                    frame_img.save(dst, "JPEG", quality=92)
+                    frame_idx += 1
+                if seg_i % 5 == 0:
+                    print(f"  line {seg_i+1}/{len(segments)} {scene} {dur:.2f}s {n_frames}к s={spring_value(int(dur*fps//2), fps):.2f} -> frame {frame_idx}")
+        print(f"сгенерил {frame_idx} кадров в {frames_dir}, склеиваю ffmpeg...")
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        # склейка ffmpeg
+        cmd = [
+            FFMPEG, "-y",
+            "-framerate", str(fps),
+            "-i", str(frames_dir / "frame_%06d.jpg"),
+            "-i", str(voice) if not args.no_audio and voice.exists() else None,
+            "-c:v", "libx264", "-preset", args.preset, "-crf", str(args.crf), "-pix_fmt", "yuv420p",
+            "-threads", str(args.concurrency),
+        ]
+        # убираем None если no-audio
+        cmd = [c for c in cmd if c is not None]
+        if not args.no_audio and voice.exists():
+            cmd += ["-c:a", "aac", "-shortest"]
+        else:
+            cmd += ["-an"]
+        cmd += [str(out)]
+        print(" ".join(cmd[:12]) + " ...")
+        subprocess.run(cmd, check=True)
+        print(f"ГОТОВО {out} {out.stat().st_size/1024/1024:.1f}МБ")
+        print(f"tmp остаётся {tmpdir} для отладки — можно удалить")
+        return
+
+    # --- статика 0 (быстро) ---
+    clips = []
+    # кэш картинок чтобы не перегенерировать одинаковые gap одной сцены
     try:
         import moviepy.editor as mpe
-        from moviepy.video.io.ffmpeg_tools import ffmpeg_escape_filename
         HAS_MOVIEPY = True
     except ImportError:
         print("ставлю moviepy..."); os.system(f"{sys.executable} -m pip install -q moviepy")
         import moviepy.editor as mpe
         HAS_MOVIEPY = True
-
-    import tempfile, numpy as np
-    tmpdir = Path(tempfile.mkdtemp(prefix="pixar_ffmpeg_"))
-    print(f"tmp {tmpdir} — рендерю {len(segments)} картинок...")
-
-    clips = []
-    # кэш картинок чтобы не перегенерировать одинаковые gap одной сцены
     cache = {}
     for idx, (typ, text, who, scene, dur) in enumerate(segments):
         # ключ кэша
