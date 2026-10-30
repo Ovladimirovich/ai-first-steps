@@ -1,4 +1,4 @@
-import { AbsoluteFill, Sequence, useVideoConfig } from "remotion";
+import { AbsoluteFill, Audio, Sequence, staticFile, useVideoConfig } from "remotion";
 import timing from "../public/timing-pixar.json";
 import { Subtitles } from "./components/Subtitles";
 import { PixarCharacters } from "./components/PixarCharacters";
@@ -58,13 +58,9 @@ export const sceneRangesPixar = () => {
 
 export const PixarMain: React.FC<{ subs?: boolean }> = ({ subs = true }) => {
   const { fps } = useVideoConfig();
-  // фон по умолчанию — теплый Pixar
   return (
     <AbsoluteFill style={{ background: "#FFF6E0" }}>
-      {/* Аудио для Pixar-версии пока опционально — если сгенерируешь voice_track-pixar.mp3, раскомментируй:
-          <Audio src={staticFile("audio/voice_track-pixar.mp3")} />
-          <Audio src={staticFile("audio/music_ducked.mp3")} />
-      */}
+      <Audio src={staticFile("audio/voice_track-pixar.mp3")} />
       {sceneRangesPixar().map((r) => {
         const Scene = (PIXAR_SCENES[r.id] ?? PIXAR_SCENES["_placeholder"]) as React.FC<SceneProps>;
         return (
