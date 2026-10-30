@@ -1,0 +1,53 @@
+name: Render FFmpeg WHY AI (fast 3-5 min)
+
+on:
+  workflow_dispatch:
+    inputs:
+      crf:
+        description: 'CRF 18 high / 23 smaller'
+        required: false
+        default: '18'
+      preset:
+        description: 'preset ultrafast/medium/slow'
+        required: false
+        default: 'ultrafast'
+      width:
+        description: 'width 1920 or 1280'
+        required: false
+        default: '1920'
+
+jobs:
+  render-ffmpeg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: arena/750486c0-ai-first-steps
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python deps
+        run: |
+          pip install --break-system-packages -q Pillow moviepy==1.0.3 imageio-ffmpeg
+          python -c "import PIL; print(PIL.__version__)"
+
+      - name: Render FFmpeg
+        run: |
+          python tools/build_ffmpeg_video.py --output release/pixar-why-ai-ffmpeg.mp4 --crf ${{ inputs.crf }} --preset ${{ inputs.preset }} --width ${{ inputs.width }} --height $(( ${{ inputs.width }} * 1080 / 1920 ))
+          ls -lh release/pixar-why-ai-ffmpeg.mp4
+          mkdir -p preview
+          cp release/pixar-why-ai-ffmpeg.mp4 preview/pixar-why-ai-ffmpeg.mp4 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixar-ffmpeg-${{ inputs.width }}p
+          path: |
+            release/pixar-why-ai-ffmpeg.mp4
+            preview/pixar-why-ai-ffmpeg.mp4
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

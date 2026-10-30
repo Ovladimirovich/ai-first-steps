@@ -90,3 +90,30 @@ npx remotion render src/index.ts PixarWhyAI ../release/pixar-why-ai.mp4 --codec 
 - [ ] `npx remotion still` для раскадровки → `storyboard/storyboard_pixar.pdf`
 
 Хочешь — могу доделать любую сцену прямо сейчас, покажи какой блок важнее.
+
+---
+
+## FFmpeg-ветка (быстрый тракт, 3-5 мин)
+
+Альтернатива Remotion для склейки готовых кусков — чистый Python + Pillow + MoviePy.
+
+```bash
+# 1080p финал как у Remotion но за 5 мин
+python tools/build_ffmpeg_video.py --output release/pixar-why-ai-ffmpeg.mp4 --crf 18 --preset medium
+
+# быстрый превью 720p за 1 мин
+python tools/build_ffmpeg_video.py --preview --output preview/pixar-why-ai-ffmpeg-preview.mp4
+
+# тест 10 реплик
+python tools/build_ffmpeg_video.py --only 10 --output /tmp/test.mp4 --no-audio --preset ultrafast
+```
+
+Сравнение:
+- Remotion: 50 мин (11 550 веб-страниц в Chrome), идеален для сложной веб-анимации, Studio превью
+- FFmpeg: 3-5 мин (Pillow рисует 114 картинок 1920x1080 + MoviePy склейка + mux voice_track), без Chrome/Node, работает на Xeon/ GitHub Actions free
+
+Оба тракта берут один `remotion/public/timing-pixar.json` 379с + `voice_track-pixar.mp3`. Выбирай: красота Remotion или скорость FFmpeg.
+
+GitHub Actions:
+- `Render Pixar WHY AI` — Remotion ~60 мин
+- `Render FFmpeg WHY AI` — FFmpeg ~4 мин (ultrafast) — artifact `pixar-ffmpeg-1920p`
