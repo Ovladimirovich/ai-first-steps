@@ -12,11 +12,24 @@
 
 Файлы лежат `.github/workflows/render-pixar.yml` и `render-ffmpeg.yml` (в ветке `arena`).
 
-## Как запустить (2 клика)
+## Как запустить (2 клика) — ВАЖНО про ветку
 
-1. Открой https://github.com/Ovladimirovich/ai-first-steps/actions
-2. Слева выбери `Render Pixar WHY AI` или `Render FFmpeg WHY AI`
-3. Справа `Run workflow` → ветка `arena/750486c0-ai-first-steps` → можно поменять `crf`/`preset`/`width` → `Run workflow`
+> **Почему у тебя пусто в Actions:** GitHub показывает в левом списке только workflow, которые есть в ветке `main` (default). Наши 2 файла пока только в `arena/750486c0-ai-first-steps`, поэтому список пуст. Это нормально.
+
+**Решение на 1 клик — смерджи PR:**
+1. Открой https://github.com/Ovladimirovich/ai-first-steps/pull/1 → `Merge pull request` → `Confirm merge`
+2. Подожди 10с, обнови https://github.com/Ovladimirovich/ai-first-steps/actions — слева появятся `Render Pixar WHY AI` и `Render FFmpeg WHY AI`
+3. Выбери нужный → `Run workflow` → ветка `arena/750486c0-ai-first-steps` → можно поменять `crf`/`preset`/`width` → `Run workflow`
+
+**Если не хочешь мерджить сейчас — запусти без UI (работает и до мержа):**
+```powershell
+# из C:\Projects_arena (нужен gh: winget install GitHub.cli)
+gh workflow run "Render Pixar WHY AI" --ref arena/750486c0-ai-first-steps
+gh workflow run "Render FFmpeg WHY AI (fast 3-5 min)" --ref arena/750486c0-ai-first-steps
+# или прямой API:
+# gh api repos/Ovladimirovich/ai-first-steps/actions/workflows/render-ffmpeg.yml/dispatches -f ref=arena/750486c0-ai-first-steps -f inputs[preset]=ultrafast
+```
+Прямые ссылки на файлы (видны и до мержа): [render-pixar.yml](https://github.com/Ovladimirovich/ai-first-steps/blob/arena/750486c0-ai-first-steps/.github/workflows/render-pixar.yml) / [render-ffmpeg.yml](https://github.com/Ovladimirovich/ai-first-steps/blob/arena/750486c0-ai-first-steps/.github/workflows/render-ffmpeg.yml)
 
 ## Параметры (по клику Run)
 
