@@ -1,0 +1,60 @@
+name: Render Pixar WHY AI
+
+on:
+  workflow_dispatch:
+    inputs:
+      composition:
+        description: 'Composition to render'
+        required: false
+        default: 'PixarWhyAI'
+      crf:
+        description: 'CRF quality (18 high, 22 smaller)'
+        required: false
+        default: '18'
+      concurrency:
+        description: 'Concurrency'
+        required: false
+        default: '2'
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: arena/750486c0-ai-first-steps
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: remotion/package-lock.json
+
+      - name: Install deps
+        working-directory: remotion
+        run: npm ci
+
+      - name: Ensure browser
+        working-directory: remotion
+        run: npx remotion browser ensure
+
+      - name: Render ${{ inputs.composition }}
+        working-directory: remotion
+        run: |
+          mkdir -p ../release
+          npx remotion render src/index.ts ${{ inputs.composition }} ../release/pixar-why-ai-full.mp4 --codec h264 --crf ${{ inputs.crf }} --concurrency ${{ inputs.concurrency }} --log=verbose
+          ls -lh ../release/pixar-why-ai-full.mp4
+          mkdir -p ../preview
+          cp ../release/pixar-why-ai-full.mp4 ../preview/pixar-why-ai-full.mp4 || true
+
+      - name: Upload video
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixar-why-ai-full
+          path: |
+            release/pixar-why-ai-full.mp4
+            preview/pixar-why-ai-full.mp4
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
