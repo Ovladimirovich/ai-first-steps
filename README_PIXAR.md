@@ -1,119 +1,113 @@
-# Pixar-версия: «Зачем ИИ школьнику»
+# Pixar-версия: «Зачем ИИ школьнику» — 6:19 для 5–8 классов
 
-**Тема:** Зачем нужен ИИ школьнику — чтобы зажечь интерес · **Аудитория:** 5–8 класс · **Хронометраж:** ~9 мин (растягивается до 11 с озвучкой) · **Стиль:** Pixar 3D (тёплый свет, объём, мягкие тени)
+**Тема:** 4 суперсилы ИИ для школьника · **Стиль:** Pixar 3D тёплый свет `#FFF6E0`, объём, тени, блики · **Хроно:** 379с 57 реплик · **Движок:** Remotion 4.0.300 + FFmpeg Pillow/MoviePy
 
-Это вторая презентация, сделанная на том же движке, что и `release/final.mp4` — но в Pixar-стилистике.
+Ветка `arena/750486c0-ai-first-steps` самодостаточна — клонируй её:
+```bash
+git clone --branch arena/750486c0-ai-first-steps https://github.com/Ovladimirovich/ai-first-steps.git
+```
+
+> Подробная документация — `docs/` (особенно [docs/02_QUICKSTART_WINDOWS.md](docs/02_QUICKSTART_WINDOWS.md) и [docs/05_PIPELINES.md](docs/05_PIPELINES.md))
 
 ---
 
-## Что уже готово (в этой ветке)
+## Что готово
 
-| Файл | Что это |
+| Файл | Что |
 |---|---|
-| `script/scenario_why_ai_pixar.md` | Полный сценарий 11:00, 8 блоков, 57 реплик — 4 суперсилы ИИ для школьника |
-| `script/lines_pixar_why_ai.json` | 57 реплик для TTS / сборки |
-| `remotion/public/timing-pixar.json` + `subtitles/ru-pixar.srt` | Таймкоды и субтитры (сгенерированы `tools/build_pixar_timing.py`) |
-| `remotion/src/pixarTheme.ts` | Тёплая палитра `#FFF6E0` вместо `#1B2A4A`, мягкие тени |
-| `remotion/src/components/PixarCard.tsx` + `PixarCharacters.tsx` | Объёмные карточки (блик, скос, тень) + Бит/Маша с градиентами/SSS |
-| `remotion/src/pixarScenes/PS0_1.tsx` … `PS6_2.tsx` | 6 ключевых Pixar-сцен + `PlaceholderPixar.tsx` для остальных |
-| `remotion/src/PixarMain.tsx` + `remotion/src/Root.tsx` | Новая композиция `PixarWhyAI` (1920×1080 30fps, 9 мин) рядом с оригиналом `Main` |
-| `assets/pixar/classroom_pixar.jpg` / `clouds_pixar_bg.jpg` | Фоны Pixar-мастерской (AI-концепт) |
-| `tools/build_pixar_timing.py` | Генерация тайминга без реальных mp3 (по длине текста, растянуто под 11 мин) |
+| `script/scenario_why_ai_pixar.md` 246 строк | Сценарий 8 блоков 11:00 → ужат до 6:19 |
+| `script/lines_pixar_why_ai.json` 57 реплик | Бит/Маша `p0_1_m_01`…`p8_2_b_03` |
+| `assets/audio/voice-pixar/` 57 mp3 1.4МБ | TTS voice-00/01 + склейка |
+| `remotion/public/timing-pixar.json` 379.0с 71 cue → 57 lines | Реальный тайминг через `ffprobe` |
+| `remotion/public/audio/voice_track-pixar.mp3` 2.9МБ | Склейка 57 mp3 |
+| `subtitles/ru-pixar.srt` 8.5К | ≤42×2 строк |
+| `remotion/src/pixarTheme.ts` | `P.bg #FFF6E0`, `teal #2EE6D6`, `yellow #FFD23F`, тень `0 20px 60px` |
+| `remotion/src/components/PixarCard.tsx` | Карточка `w1400 r28` блик `linear-gradient(white.18, transparent)` + `spring 13/140` |
+| `remotion/src/components/PixarCharacters.tsx` | Бит кубик-градиент/SSS, Маша худи |
+| `remotion/src/pixarScenes/PS*.tsx` **25 сцен** | `PS0_1`…`PS8_2` + `PlaceholderPixar` |
+| `remotion/src/PixarMain.tsx` + `Root.tsx` | Композиция `PixarWhyAI` 1920×1080 30fps `durationInFrames ceil((379+6)*30)=11550` |
+| `assets/pixar/classroom_pixar.jpg` 274К, `clouds_pixar_bg.jpg` 86К | Фоны мастерской |
+| `tools/build_pixar_timing.py` / `build_pixar_real_timeline.py` | Эмуляция по тексту vs реальный `ffprobe` |
+| `tools/build_ffmpeg_video.py` ★ | **FFmpeg-ветка 3-5 мин** 1920×1080 114 картинок + MoviePy |
+| `tools/render_pixar_chunks.sh` | Чанки по 1500 кадров для слабых ПК (`preview/chunks_pixar`) |
+| `preview/pixar-why-ai-preview.mp4` 7.8МБ 6:18 | Превью FFmpeg цвет+voice+subs (уже готов) |
+| `preview/pixar-why-ai-ffmpeg.mp4` 26МБ 6:19 | **Финал FFmpeg 5:18 medium** |
+| `.github/workflows/render-pixar.yml` | Cloud Remotion ~60 мин |
+| `.github/workflows/render-ffmpeg.yml` | **Cloud FFmpeg ~4 мин ultrafast** |
 
-### Сценарий «Зачем ИИ школьнику» — структура
+---
+
+## Как посмотреть
+
+```bash
+cd remotion && npm i && npx remotion browser ensure
+npm run dev   # http://localhost:3000 → выбери PixarWhyAI → Play
+```
+
+Превью уже готов без рендера: `preview/pixar-why-ai-preview.mp4` / `preview/pixar-why-ai-ffmpeg.mp4` — открывай в VLC.
+
+---
+
+## Как собрать (2 тракта, один тайминг)
+
+**Озвучка (уже есть):** 57 mp3 в `assets/audio/voice-pixar/` → `python tools/build_pixar_real_timeline.py` → `timing-pixar.json` + `voice_track-pixar.mp3`
+
+**Тракт A — Remotion (красиво, 50 мин):**
+```bash
+cd remotion
+npx remotion render src/index.ts PixarWhyAI ../release/pixar-why-ai-full.mp4 --codec h264 --crf 18 --concurrency 4
+# чанками: bash ../tools/render_pixar_chunks.sh pixar-why-ai-full.mp4
+```
+
+**Тракт B — FFmpeg (быстро, 3-5 мин, рекомендуется):**
+```bash
+pip install Pillow moviepy==1.0.3 imageio-ffmpeg
+python tools/build_ffmpeg_video.py --output release/pixar-why-ai-ffmpeg.mp4 --crf 18 --preset medium
+python tools/build_ffmpeg_video.py --preview --output preview/pixar-why-ai-ffmpeg-preview.mp4  # 720p 1 мин
+python tools/build_ffmpeg_video.py --only 10 --output /tmp/test.mp4 --no-audio --preset ultrafast  # тест
+```
+
+Оба берут `timing-pixar.json` + `voice_track-pixar.mp3`. Подробное сравнение — [docs/05_PIPELINES.md](docs/05_PIPELINES.md).
+
+**Облако бесплатно:** `https://github.com/Ovladimirovich/ai-first-steps/actions` → `Render Pixar WHY AI` (60 мин) или `Render FFmpeg WHY AI` (4 мин) → `Run workflow` → качай artifact 7 дней.
+
+---
+
+## 8 блоков — 4 суперсилы
 
 | Блок | Время | Суперсила |
 |---|---|---|
-| 0 | 0:00–0:40 | Хук: гора домашки за 2 часа → с ИИ за 10 мин |
-| 1 | 0:40–2:30 | Репетитор, который объясняет твоими словами (пиццерия, Майнкрафт) |
-| 2 | 2:30–4:40 | Творец: промпт → шум 50 шагов → постер/музыка |
-| 3 | 4:40–4:55 | Чек №1: сдал чужое как своё? |
-| 4 | 4:55–6:50 | Исследователь: идеи → план → код → детектив |
-| 5 | 6:50–8:20 | Профессия будущего: архитектор миров / исследователь / режиссёр |
-| 6 | 8:20–9:30 | 3 щита: Проверяй / Указывай / Береги личное |
-| 7 | 9:30–9:50 | Чек №2: ИИ сделает умнее сам? |
-| 8 | 9:50–11:00 | 4 карточки + челлендж на неделю |
+| 0 | 0:00–0:28 | Хук: 2 часа vs 10 мин |
+| 1 | 0:29–1:33 | Репетитор 24/7 (пиццерия, Майнкрафт) |
+| 2 | 1:35–2:31 | Творец: промпт → шум 50 шагов → постер |
+| 3 | 2:33–2:51 | Чек: честно ли сдать чужое? |
+| 4 | 2:52–3:50 | Исследователь: идеи → план → код |
+| 5 | 3:51–4:41 | Профессия будущего |
+| 6 | 4:43–5:27 | 3 щита: Проверяй / Указывай / Береги |
+| 7 | 5:28–5:43 | Чек: сделает умнее сам? |
+| 8 | 5:45–6:19 | 4 карточки + челлендж на неделю |
 
-Подробно — `script/scenario_why_ai_pixar.md`
-
----
-
-## Как посмотреть Pixar-версию
-
-```bash
-cd remotion
-npm i
-npm run dev
-# откроется http://localhost:3000
-# вверху выбери композицию PixarWhyAI (вторая вкладка рядом с Main)
-```
-
-Границы сцен уже посчитаны из текста. Чтобы увидеть движение — жми Play.
-
-### Как собрать видео
-
-**1. Озвучка (опционально):** запиши `assets/audio/voice-pixar/p*_*.mp3` по id из `lines_pixar_why_ai.json` и пересобери тайминг реальным ffmpeg:
-```bash
-# если есть реальные mp3:
-python tools/build_timeline.py  # для оригинала
-python tools/build_pixar_timing.py  # пока эмулирует, замени на реальный build когда появятся mp3
-```
-
-**2. Рендер:**
-```bash
-cd remotion
-npx remotion render src/index.ts PixarWhyAI ../release/pixar-why-ai.mp4 --codec h264 --crf 18
-# или по кускам на слабом ПК:
-../tools/render_chunks.sh pixar-why-ai.mp4 --props='{"subs":true}'
-```
+Подробно — `script/scenario_why_ai_pixar.md`, по сценам — [docs/06_PIXAR_SCENES.md](docs/06_PIXAR_SCENES.md).
 
 ---
 
-## Чем Pixar-версия отличается от оригинала
+## Чем отличается от оригинала
 
-| Оригинал `Main` | Pixar `PixarWhyAI` |
+| Оригинал `Main` 11:45 | Pixar `PixarWhyAI` 6:19 |
 |---|---|
-| Фон `#1B2A4A` холодный, flat SVG | Фон `#FFF6E0` тёплый, градиенты, окно, дерево стола |
-| `Card.tsx` + `Characters.tsx` — плоские | `PixarCard.tsx` + `PixarCharacters.tsx` — объём (блик сверху, тень, градиент, царапины, SSS-румянец) |
-| Сцены `S0_1...S8_2` — инфографика | `PS0_1...` — мастерская/пиццерия/3D-прогрессбар |
-| Тема «что такое ИИ» (теория) | Тема «зачем ИИ ТЕБЕ» (мотивация, портфолио, челлендж) |
+| `#1B2A4A` холодный, flat SVG | `#FFF6E0` тёплый, градиенты, облака 0.18 |
+| `Card.tsx` плоские | `PixarCard.tsx` объём: `shadow 0 20px 60px + inset блик + inset тень`, `spring` |
+| `S0_1…S8_2` инфографика 30 сцен | `PS0_1…PS8_2` мастерская/пиццерия/прогрессбар 25 сцен |
+| «что такое ИИ» теория | «зачем ИИ тебе» мотивация + портфолио + челлендж |
 
-Весь конвейер (субтитры, музыка, `sceneRanges()`) — тот же, меняется только `Scene` компоненты.
-
----
-
-## Что доделать до финала (1–2 дня)
-
-- [ ] Дорисовать 19 Pixar-сцен (сейчас 6 готовых + 19 PlaceholderPixar — просто скопируй `PS1_2` как шаблон)
-- [ ] Записать TTS: Бит=мужской тёплый, Маша=девочка (как в оригинале voice-00/01) → кинуть в `assets/audio/voice-pixar/` и прогнать `build_pixar_timing.py` через ffmpeg
-- [ ] Сгенерировать фоны для каждой сцены (Blender или AI) → `remotion/public/pixar/`
-- [ ] `npx remotion still` для раскадровки → `storyboard/storyboard_pixar.pdf`
-
-Хочешь — могу доделать любую сцену прямо сейчас, покажи какой блок важнее.
+Конвейер `sceneRanges()` + субтитры + музыка — тот же.
 
 ---
 
-## FFmpeg-ветка (быстрый тракт, 3-5 мин)
+## Что дальше
 
-Альтернатива Remotion для склейки готовых кусков — чистый Python + Pillow + MoviePy.
+* Дорисовать фоны для каждой сцены (Blender/AI) → `remotion/public/pixar/`
+* `npx remotion still` → `storyboard/storyboard_pixar.pdf`
+* Добавить `spring` в FFmpeg-ветку (сейчас статичные карточки) — будет 7 мин но с анимацией
 
-```bash
-# 1080p финал как у Remotion но за 5 мин
-python tools/build_ffmpeg_video.py --output release/pixar-why-ai-ffmpeg.mp4 --crf 18 --preset medium
-
-# быстрый превью 720p за 1 мин
-python tools/build_ffmpeg_video.py --preview --output preview/pixar-why-ai-ffmpeg-preview.mp4
-
-# тест 10 реплик
-python tools/build_ffmpeg_video.py --only 10 --output /tmp/test.mp4 --no-audio --preset ultrafast
-```
-
-Сравнение:
-- Remotion: 50 мин (11 550 веб-страниц в Chrome), идеален для сложной веб-анимации, Studio превью
-- FFmpeg: 3-5 мин (Pillow рисует 114 картинок 1920x1080 + MoviePy склейка + mux voice_track), без Chrome/Node, работает на Xeon/ GitHub Actions free
-
-Оба тракта берут один `remotion/public/timing-pixar.json` 379с + `voice_track-pixar.mp3`. Выбирай: красота Remotion или скорость FFmpeg.
-
-GitHub Actions:
-- `Render Pixar WHY AI` — Remotion ~60 мин
-- `Render FFmpeg WHY AI` — FFmpeg ~4 мин (ultrafast) — artifact `pixar-ffmpeg-1920p`
+Полный чек-лист — [docs/01_OVERVIEW.md](docs/01_OVERVIEW.md), правка реплик — [docs/07_TIMELINE_VOICE.md](docs/07_TIMELINE_VOICE.md), проблемы — [docs/08_TROUBLESHOOTING.md](docs/08_TROUBLESHOOTING.md).
