@@ -144,9 +144,8 @@ def spring_value(frame, fps=30, damping=13, stiffness=140, mass=1):
     if x > 1.04: return 1.04
     return x
 
-def draw_pixar_frame(text, who, scene, s, W=1920, H=1080, bg_img=None):
-    """Рисует кадр с учётом пружины s (0→1): карточка едет снизу + scale + opacity.
-    bg_img — уже подготовленный фон 1920x1080 (PIL), чтобы не пересоздавать."""
+def draw_pixar_frame(text, who, scene, s, W=1920, H=1080, bg_img=None, karaoke_frac=1.0):
+    """Рисует кадр с учётом пружины s (0→1): карточка едет снизу + scale + opacity + karaoke подсветка слов."""
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
     # клон фона
     img = bg_img.copy()
@@ -215,14 +214,27 @@ def draw_pixar_frame(text, who, scene, s, W=1920, H=1080, bg_img=None):
     draw.text((ax+avatar_r*2+int(16*scale), ay+int(18*scale)), who_label, font=font_who, fill=(255,255,255, int(230*s)))
     tx0 = sx + int(38*scale)
     ty0 = sy + int(88*scale)
+    # karaoke: подсвечиваем слова по мере произнесения
+    words_all = text.split()
+    hl_count = int(len(words_all) * karaoke_frac)
+    w_idx = 0
     for i, line in enumerate(lines):
         y = ty0 + int(i*line_h*scale)
-        # уменьшаем шрифт под scale
-        # используем тот же font_body но рисуем меньше — для простоты оставим 40*scale
-        # пересоздадим шрифт под scale
         f = get_font(int(40*scale))
-        draw.text((tx0+1, y+1), line, font=f, fill=(0,0,0, int(40*s)))
-        draw.text((tx0, y), line, font=f, fill=(244,246,250, opacity))
+        # рисуем слово за словом чтобы подсветить
+        x = tx0
+        for w in line.split():
+            is_hl = w_idx < hl_count
+            col = hex_to_rgb(P["yellow"]) + (opacity,) if is_hl else (244,246,250, opacity)
+            # тень
+            draw.text((x+1, y+1), w, font=f, fill=(0,0,0, int(40*s)))
+            draw.text((x, y), w, font=f, fill=col)
+            # свечение для подсвеченных
+            if is_hl:
+                draw.text((x, y), w, font=f, fill=(255,210,63, int(90*s)))
+            bbox = draw.textbbox((0,0), w + " ", font=f)
+            x += bbox[2] - bbox[0]
+            w_idx += 1
     # прогресс
     pw = int(card_w * 0.72 * scale)
     px = sx + (sw - pw)//2
@@ -548,9 +560,10 @@ def main():
                 if seg_i % 10 == 0:
                     print(f"  gap {seg_i+1}/{len(segments)} {scene} {dur:.2f}s -> {n_frames} кадров")
             else:
-                # line — с пружиной
+                # line — с пружиной + karaoke
                 for f in range(n_frames):
                     s = spring_value(f, fps=fps, damping=13, stiffness=140)
+                    karaoke_frac = (f + 1) / n_frames
                     # фон: либо base_bg_img (workshop) либо свежий градиент/облака
                     if args.use_workshop_bg and base_bg_img is not None:
                         # для workshop — каждый кадр это base_bg + карточка с s + заголовок
@@ -563,8 +576,8 @@ def main():
                         tx = (W - (bbox[2]-bbox[0]))//2
                         d.text((tx+2, 44+3), title, font=font_title, fill=(0,0,0,70))
                         d.text((tx, 44), title, font=font_title, fill=(255,255,255))
-                        # карточка с пружиной поверх
-                        frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=frame_img)
+                        # карточка с пружиной + karaoke поверх
+                        frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=frame_img, karaoke_frac=karaoke_frac)
                     else:
                         # облака — генерим фон каждый кадр? слишком долго, используем base_bg без заголовка + карточка
                         # но base_bg без заголовка — добавим заголовок
@@ -577,11 +590,11 @@ def main():
                             tx = (W - (bbox[2]-bbox[0]))//2
                             d.text((tx+2, 44+3), title, font=font_title, fill=(0,0,0,70))
                             d.text((tx, 44), title, font=font_title, fill=(27,42,74))
-                            frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=frame_img)
+                            frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=frame_img, karaoke_frac=karaoke_frac)
                         else:
                             # fallback — старый draw_pixar_image но с s
                             # для простоты — используем draw_pixar_image для каждого кадра (медленнее)
-                            frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=Image.new("RGB", (W,H), hex_to_rgb(P["bg"])))
+                            frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=Image.new("RGB", (W,H), hex_to_rgb(P["bg"])), karaoke_frac=karaoke_frac)
                     dst = frames_dir / f"frame_{frame_idx:06d}.jpg"
                     frame_img.save(dst, "JPEG", quality=92)
                     frame_idx += 1
@@ -590,25 +603,134 @@ def main():
         print(f"сгенерил {frame_idx} кадров в {frames_dir}, склеиваю ffmpeg...")
         out = Path(args.output)
         out.parent.mkdir(parents=True, exist_ok=True)
-        # склейка ffmpeg
-        cmd = [
-            FFMPEG, "-y",
-            "-framerate", str(fps),
-            "-i", str(frames_dir / "frame_%06d.jpg"),
-            "-i", str(voice) if not args.no_audio and voice.exists() else None,
-            "-c:v", "libx264", "-preset", args.preset, "-crf", str(args.crf), "-pix_fmt", "yuv420p",
-            "-threads", str(args.concurrency),
-        ]
-        # убираем None если no-audio
-        cmd = [c for c in cmd if c is not None]
+        # --- SFX и музыка (если есть) ---
+        # генерим SFX-дорожку: pop на каждую реплику, hiss на 2.2
+        sfx_path = None
+        pop_path = ROOT / "assets/audio/sfx/pop.mp3"
+        hiss_path = ROOT / "assets/audio/sfx/hiss.mp3"
+        if (pop_path.exists() or hiss_path.exists()) and not args.no_audio:
+            import wave
+            sr = 48000
+            total_samps = int(total * sr)
+            sfx = np.zeros(total_samps, dtype=np.float32)
+            # pop на каждую линию
+            if pop_path.exists():
+                # загрузим pop как numpy via wave (через ffmpeg decode to wav)
+                # проще — декодируем через ffmpeg to temp wav
+                pop_wav = tmpdir / "pop.wav"
+                subprocess.run([FFMPEG, "-y", "-i", str(pop_path), "-ar", str(sr), "-ac", "1", "-f", "wav", str(pop_wav)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    import wave as wv
+                    with wv.open(str(pop_wav), "rb") as w:
+                        n = w.getnframes()
+                        pop_data = np.frombuffer(w.readframes(n), dtype=np.int16).astype(np.float32) / 32767.0
+                    # накладываем pop на время каждой линии
+                    t_cur = 0.0
+                    for typ, text, who, scene, dur in segments:
+                        if typ == "line":
+                            start_samp = int(t_cur * sr)
+                            end_samp = min(start_samp + len(pop_data), total_samps)
+                            sfx[start_samp:end_samp] += pop_data[:end_samp-start_samp] * 0.7
+                        t_cur += dur
+                except Exception as e:
+                    print(f"SFX pop fail: {e}")
+            # hiss на сцену 2.2 (диффузия)
+            if hiss_path.exists():
+                hiss_wav = tmpdir / "hiss.wav"
+                subprocess.run([FFMPEG, "-y", "-i", str(hiss_path), "-ar", str(sr), "-ac", "1", "-f", "wav", str(hiss_wav)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    with wave.open(str(hiss_wav), "rb") as w:
+                        n = w.getnframes()
+                        hiss_data = np.frombuffer(w.readframes(n), dtype=np.int16).astype(np.float32) / 32767.0
+                    t_cur = 0.0
+                    for typ, text, who, scene, dur in segments:
+                        if scene == "2.2" and typ == "line":
+                            start_samp = int(t_cur * sr)
+                            end_samp = min(start_samp + len(hiss_data), total_samps)
+                            sfx[start_samp:end_samp] += hiss_data[:end_samp-start_samp] * 0.25
+                        t_cur += dur
+                except Exception as e:
+                    print(f"SFX hiss fail: {e}")
+            # пишем sfx микс
+            sfx_path = tmpdir / "sfx_mix.wav"
+            sfx = np.clip(sfx, -1, 1)
+            with wave.open(str(sfx_path), "w") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+                w.writeframes((sfx*32767).astype(np.int16).tobytes())
+            print(f"SFX дорожка {sfx_path} {sfx_path.stat().st_size/1024:.1f}КБ")
+        # музыка ducking: loop music_loop.mp3 на total, тихо -25дБ
+        music_path = ROOT / "assets/audio/music_loop.mp3"
+        music_mix = None
+        if music_path.exists() and not args.no_audio:
+            music_mix = tmpdir / "music_ducked.wav"
+            # миксуем музыку тихо под голос (volume 0.15), loop
+            # ffmpeg -stream_loop
+            subprocess.run([FFMPEG, "-y", "-stream_loop", str(int(total//10+1)), "-i", str(music_path), "-t", str(total), "-filter:a", "volume=0.15", str(music_mix)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"музыка ducked {music_mix}")
+
+        # склейка ffmpeg с учётом SFX и музыки
+        # собираем входы: 0:v frames, 1:a voice, 2:a sfx, 3:a music
+        cmd = [FFMPEG, "-y", "-framerate", str(fps), "-i", str(frames_dir / "frame_%06d.jpg")]
+        inputs = []
         if not args.no_audio and voice.exists():
-            cmd += ["-c:a", "aac", "-shortest"]
+            cmd += ["-i", str(voice)]
+            inputs.append("voice")
         else:
-            cmd += ["-an"]
+            inputs.append(None)
+        if sfx_path and sfx_path.exists():
+            cmd += ["-i", str(sfx_path)]
+            inputs.append("sfx")
+        else:
+            inputs.append(None)
+        if music_mix and music_mix.exists():
+            cmd += ["-i", str(music_mix)]
+            inputs.append("music")
+        else:
+            inputs.append(None)
+        # фильтр для аудио микса
+        # входы после 0:v: voice=1:a, sfx=2:a, music=3:a — но индексы зависят от наличия
+        # проще — считаем
+        # соберём список аудио входов для amix
+        a_inputs = []
+        # voice всегда 1 если есть
+        voice_idx = 1 if inputs[0] else None
+        sfx_idx = None; music_idx = None
+        cur_idx = 1
+        if inputs[0]:
+            cur_idx +=1
+            if inputs[1]:
+                sfx_idx = cur_idx; cur_idx+=1
+            if inputs[2]:
+                music_idx = cur_idx
+        else:
+            if inputs[1]:
+                sfx_idx = cur_idx; cur_idx+=1
+            if inputs[2]:
+                music_idx = cur_idx
+        # если есть несколько аудио — миксуем
+        if sfx_idx is not None or music_idx is not None:
+            # filter_complex: [1:a][2:a]amix=inputs=2:duration=longest[a]; [a][3:a]amix...
+            # упростим: все в один amix
+            amix_inputs = []
+            if voice_idx is not None: amix_inputs.append(f"[{voice_idx}:a]")
+            if sfx_idx is not None: amix_inputs.append(f"[{sfx_idx}:a]")
+            if music_idx is not None: amix_inputs.append(f"[{music_idx}:a]")
+            filter_a = "".join(amix_inputs) + f"amix=inputs={len(amix_inputs)}:duration=longest:dropout_transition=0[aout]"
+            cmd += ["-filter_complex", filter_a, "-map", "0:v", "-map", "[aout]", "-c:v", "libx264", "-preset", args.preset, "-crf", str(args.crf), "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-threads", str(args.concurrency)]
+        else:
+            # только voice или без аудио
+            cmd += ["-c:v", "libx264", "-preset", args.preset, "-crf", str(args.crf), "-pix_fmt", "yuv420p", "-threads", str(args.concurrency)]
+            if not args.no_audio and voice.exists():
+                cmd += ["-c:a", "aac", "-shortest"]
+                # маппим
+                cmd += ["-map", "0:v", "-map", "1:a"]
+            else:
+                cmd += ["-an"]
+                cmd += ["-map", "0:v"]
         cmd += [str(out)]
-        print(" ".join(cmd[:12]) + " ...")
+        print(" ".join(cmd[:15]) + " ...")
         subprocess.run(cmd, check=True)
-        print(f"ГОТОВО {out} {out.stat().st_size/1024/1024:.1f}МБ")
+        print(f"ГОТОВО {out} {out.stat().st_size/1024/1024:.1f}МБ (с SFX/музыкой)")
         print(f"tmp остаётся {tmpdir} для отладки — можно удалить")
         return
 
