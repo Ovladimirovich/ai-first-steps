@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI Video Factory</title><link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/"><span class="brand-mark">✦</span><span>video<span class="brand-light">factory</span><small>локальная мастерская</small></span></a><div id="projectTitle" class="project-title">Новый ролик</div><div class="demo-badge" title="Сценарий и озвучка — демонстрационные. Видео собирается по-настоящему."><i></i> Демо-режим</div></header>
+  <div class="layout">
+    <aside class="sidebar"><div class="side-label">ВАШ РОЛИК</div><nav id="steps" class="steps"></nav><div class="side-bottom"><div class="local-mark"><span>●</span> Всё хранится на этом компьютере</div><button id="newProject" class="quiet-button">＋ Новый ролик</button></div></aside>
+    <main id="main" class="main"><div class="loading">Загружаю мастерскую…</div></main>
+    <aside class="preview-rail"><div class="rail-head"><span>ПРЕДПРОСМОТР</span><span class="live-dot"></span></div><div id="preview" class="preview-card"><div class="preview-art"><div class="sun"></div><div class="preview-cube">B</div><div class="preview-caption">Идея → история → видео</div></div><p>Ваш ролик появится здесь по мере работы.</p></div><div id="statusCard" class="status-card"></div></aside>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

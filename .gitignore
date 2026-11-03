@@ -8,6 +8,11 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Local AI Video Factory projects and generated media
+.factory/
+__pycache__/
+*.py[cod]
+
 # Build output (generated video)
 release/
 dist/
