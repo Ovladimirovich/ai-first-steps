@@ -933,3 +933,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+# --- Added from b2a47ef commit: scene_bg_dir and bg_for_scene ---
+scene_bg_dir = Path(args.scene_bg_dir).resolve() if args.scene_bg_dir else None
+def bg_for_scene(scene_id):
+    if scene_bg_dir and scene_bg_dir.is_dir():
+        safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
+        for ext in (".jpg", ".jpeg", ".png"):
+            candidate = scene_bg_dir / f"{safe_scene}{ext}"
+            if candidate.is_file():
+                return candidate
+    return bg_path
