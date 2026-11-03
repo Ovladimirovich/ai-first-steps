@@ -1,6 +1,7 @@
 import { Composition } from "remotion";
 import { Main } from "./Main";
 import { PixarMain } from "./PixarMain";
+import { MyPixarStandalone } from "./scenes/MyPixarScene";
 import timing from "../public/timing.json";
 import timingPixar from "../public/timing-pixar.json";
 
@@ -23,6 +24,14 @@ export const Root = () => (
       fps={timingPixar.fps}
       durationInFrames={Math.ceil((timingPixar.total + 6) * timingPixar.fps)}
       defaultProps={{ subs: true }}
+    />
+    <Composition
+      id="MyPixar"
+      component={MyPixarStandalone}
+      width={1920}
+      height={1080}
+      fps={30}
+      durationInFrames={30 * 10}
     />
   </>
 );
