@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "python ../tools/build_timeline.py",
+    "prerender": "python ../tools/build_timeline.py",
     "dev": "remotion studio src/index.ts --port 3000",
     "render": "remotion render src/index.ts Main ../release/final.mp4 --codec h264 --crf 18",
     "render:nosubs": "remotion render src/index.ts Main ../release/final_nosubs.mp4 --props='{\"subs\":false}' --codec h264 --crf 18",
