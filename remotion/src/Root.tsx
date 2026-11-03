@@ -31,7 +31,7 @@ export const Root = () => (
       width={1920}
       height={1080}
       fps={30}
-      durationInFrames={30 * 10}
+      durationInFrames={30 * 14}
     />
   </>
 );
