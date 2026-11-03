@@ -496,6 +496,17 @@ def main():
         for p in [ASSETS / "classroom_pixar.jpg", ASSETS / "clouds_pixar_bg.jpg", ROOT/"remotion/public/pixar/clouds_pixar_bg.jpg"]:
             if p.exists():
                 bg_path = p; break
+    # --- добавлено из b2a47ef: директория сценных фонов ---
+    scene_bg_dir = Path(args.scene_bg_dir).resolve() if args.scene_bg_dir else None
+    def bg_for_scene(scene_id):
+        if scene_bg_dir and scene_bg_dir.is_dir():
+            safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
+            for ext in (".jpg", ".jpeg", ".png"):
+                candidate = scene_bg_dir / f"{safe_scene}{ext}"
+                if candidate.is_file():
+                    return candidate
+        return bg_path
+
     # --- новый рендерер «мультфильм с персонажами» ---
     renderer = None
     use_character_mode = (args.motion == 3 and not args.legacy_flat and HAS_FRAME)
