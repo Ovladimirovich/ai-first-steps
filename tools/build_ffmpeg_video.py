@@ -444,8 +444,13 @@ def main():
     ap.add_argument("--legacy-flat", action="store_true", help="старый плоский рендер: только карточка, без персонажей и пер-сценных фонов")
     ap.add_argument("--no-sprites", action="store_true", help="персонажи не рисовать (фон + карточка)")
     ap.add_argument("--scene-dir", default=str(ASSETS), help="папка с scene_*.jpg и спрайтами bit/masha")
-    ap.add_argument("--workers", type=int, default=1, help="параллельных процессов отрисовки кадров (1 = один поток)")
+    ap.add_argument("--scene-bg-dir", default="", help="папка с фоном по ID сцены <ID>.jpg (алиас к --scene-dir)")
+    ap.add_argument("--workers", type=int, default=1, help="параллельных процессов отрисовки кадров (1 = один поток); alias: --concurrency")
     args = ap.parse_args()
+
+    # --concurrency alias to --workers for factory compatibility
+    if args.concurrency and not args.workers:
+        args.workers = args.concurrency
 
     if args.preview:
         args.width = 1280
@@ -501,8 +506,9 @@ def main():
     def bg_for_scene(scene_id):
         if scene_bg_dir and scene_bg_dir.is_dir():
             safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
-            for ext in (".jpg", ".jpeg", ".png"):
-                candidate = scene_bg_dir / f"{safe_scene}{ext}"
+            # Поддерживаем оба паттерна: <ID>.jpg и scene_<ID>.jpg
+            for pattern in (f"{safe_scene}.jpg", f"scene_{safe_scene}.jpg", f"{safe_scene}.jpeg", f"scene_{safe_scene}.jpeg", f"{safe_scene}.png", f"scene_{safe_scene}.png"):
+                candidate = scene_bg_dir / pattern
                 if candidate.is_file():
                     return candidate
         return bg_path
