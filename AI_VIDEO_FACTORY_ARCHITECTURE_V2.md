@@ -1,8 +1,10 @@
 # AI Video Factory — архитектура студии v2
 
-**Статус:** архитектура утверждена пользователем; backend F1 реализован в рабочей ветке. F2/F3 и UI-этапы не входят в текущую поставку. Реализация F1 не мигрирует существующие проекты автоматически.
+**Статус:** архитектура утверждена пользователем; backend F1 и ядро F2 реализованы в рабочей Arena-ветке. F2 включает вычисляемые fingerprints и immutable asset storage; F3, UI-подключение draft и реальные AI media providers не входят в этот этап. Существующие v1 проекты не мигрируются автоматически.
 
-**Результат F1:** новые проекты сохраняются как `spec_version: 2` и отдельный `production.json`; старый UI/renderer продолжает получать v1-совместимую проекцию. Добавлены revision snapshots, раздельные `spec_revision`/`production_revision`, restore как новая ревизия, атомарная запись JSON и явный read-only migration plan / confirm-bound apply для v1. Реализованы маршруты `GET /api/projects/{id}/studio`, `GET .../migration/plan`, `POST .../migration/apply`, `GET .../revisions`, `GET .../revisions/{revision_id}` и `POST .../revisions/{revision_id}/restore`. Persisted working-draft API (`PUT/GET .../drafts/{session_id}`, explicit `.../commit`) реализован без подключения UI. Fingerprints F2, журнал событий/очередь F3 и UI-редактор черновиков остаются следующими этапами.
+**Результат F1:** новые проекты сохраняются как `spec_version: 2` и отдельный `production.json`; старый UI/renderer продолжает получать v1-совместимую проекцию. Добавлены revision snapshots, раздельные `spec_revision`/`production_revision`, restore как новая ревизия, атомарная запись JSON и явный read-only migration plan / confirm-bound apply для v1. Persisted working-draft API реализован без подключения UI.
+
+**Результат F2:** добавлены canonical dependency fingerprints по каждой реплике, сцене, таймингу, кадру/сегменту и отдельно Preview/Final Render; входы учитывают model/version, prompt, параметры и content hashes, секреты и volatile UI/action metadata исключаются. Новый v2 upload и результаты pipeline пишутся как content-addressed asset versions, manifest append-only, а легаси-пути остаются совместимыми alias. Реализован read-only `GET /api/projects/{id}/fingerprints` с детальными статусами и stale reasons. F2 не запускает генерацию, не меняет legacy renderer и не мигрирует v1.
 
 ## 1. Цель и инварианты
 
@@ -181,6 +183,8 @@ Fingerprint — SHA-256 от канонического JSON: UTF-8, сорти�
 
 Техническое изменение только `codec`/`CRF` меняет fingerprint соответствующего Render, но не `spec_revision`, image/audio fingerprints или выбранные source assets. Смена FPS инвалидирует сборку и только те производные тайминги, для которых FPS действительно является входом.
 
+**Реализация F2 v1:** `factory/fingerprints.py` использует canonical SHA-256 serialization и dependency vectors; `factory/assets.py` хранит v2 uploads/derived outputs в `assets/sha256/` и добавляет их в append-only manifest. `GET /api/projects/{id}/fingerprints` выполняет принудительную проверку hash выбранных/используемых файлов; обычный status API использует stat-aware hash cache, чтобы не читать большие renders при каждом опросе. Stale состояния и `changed_dependencies` считаются раздельно для line voice, scene image inputs, frame, scene segment, Preview и Final. Старые unverified ассеты сохраняются; повреждение/отсутствие выявляется при проверке используемой версии.
+
 ## 6. Предложения ИИ, подтверждение и проверяемая история
 
 ### 6.1. Модель действия
@@ -317,6 +321,8 @@ Fingerprint — SHA-256 от канонического JSON: UTF-8, сорти�
 - Отдельная матрица mutation→stale для текста, prompt, reference image, voice/model/delivery, cue, timing, codec/FPS/renderer.
 - Новый вариант не перезаписывает файл/запись; выбор варианта создаёт production revision.
 - Legacy assets с неполным provenance обозначаются `legacy_unverified`; никаких неявных regeneration.
+- F2 реализовано: canonical fingerprints и dependency vectors проверены mutation-тестами; загрузки и новые pipeline outputs v2 используют content-addressed неизменяемые версии, append-only asset manifest и совместимые старые пути.
+- Автоматического real render/image/TTS вызова нет. Интеграционная проверка реального MP4 на локальном Pillow/MoviePy окружении требуется локальному инженеру; renderer-команда не менялась.
 
 ### F3 — action log, gates, очередь
 
@@ -359,7 +365,7 @@ Fingerprint — SHA-256 от канонического JSON: UTF-8, сорти�
 
 1. **F0 (аудит, сейчас):** этот документ и согласование фактов/контрактов; без изменений production-кода.
 2. **F1:** v2 модели, v1 read-adapter, staging migration, immutable revision snapshots/restore.
-3. **F2:** manifest ассетов, стабильные content hashes, dependency graph, вычисляемые stale reasons.
+3. **F2:** ✅ backend реализован — append-only manifest, immutable content-addressed variants, dependency fingerprints и stale reasons; ожидается локальный smoke-test реального renderer pipeline.
 4. **F3:** append-only action journal, cost/consent gates, персистентная очередь и recovery.
 5. **F4:** редактор сценария с рабочим draft, diff/accept/reject и быстрым preview.
 6. **F5:** prompts и история визуальных вариантов; реальные провайдеры только после отдельного выбора/оценки.
@@ -378,4 +384,4 @@ Fingerprint — SHA-256 от канонического JSON: UTF-8, сорти�
 5. Журнал `actions.jsonl` использует hash-chain для обнаружения изменений; он не является криптографически подписанным аудитом.
 6. Персистентная очередь в первом локальном релизе — файловая с atomic replace и одним серверным процессом; SQLite рассматривается только если F0 выявит недостаточность файловой транзакционности.
 
-**Граница поставки:** F1 backend реализован и проверен тестами. Существующие v1 проекты остаются нетронутыми до явного вызова migration/apply с актуальным fingerprint. F2 (полный asset dependency graph), F3 (append-only action journal и персистентная очередь), а также интерфейс draft/accept не реализованы и требуют следующего этапного решения.
+**Граница поставки:** F1 и F2 backend реализованы и проходят sandbox/unit/API тесты. Существующие v1 проекты остаются нетронутыми до явного вызова migration/apply с актуальным fingerprint. Реальный локальный MP4 pipeline следует проверить после переноса F2 в рабочую `main`; в этом sandbox отсутствует Pillow, поэтому end-to-end render не запускался. F3 (append-only action journal и персистентная очередь), UI-подключение draft/accept и реальные image/TTS/music providers не реализованы.

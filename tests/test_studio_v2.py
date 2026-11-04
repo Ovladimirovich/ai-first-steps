@@ -1,4 +1,6 @@
+import base64
 import copy
+import io
 import json
 import sys
 import tempfile
@@ -351,6 +353,63 @@ class StudioV2ApiTests(unittest.TestCase):
         status, committed = self.request(f"/api/projects/{project_id}/drafts/browser-session/commit", "POST", {})
         self.assertEqual(status, 200)
         self.assertEqual(committed["project"]["spec"]["intent"]["theme"], "UI draft, not yet committed")
+
+    def test_v2_uploads_are_immutable_asset_versions_and_fingerprints_api_is_read_only(self):
+        project = create_project({"theme": "Неизменяемые фоны", "duration": 30})
+        project["spec"]["script"]["scenes"] = [{
+            "id": "s1", "order": 1, "title": "Сцена", "purpose": "hook", "goal": "Зацепить",
+            "visual_note": "Фон", "image": {"mode": "style", "path": None},
+            "lines": [{"id": "l1", "hero": "h1", "text": "Текст", "pause_after_s": None}],
+        }]
+        project["revision"] += 1
+        save_project(project)
+
+        import types
+        class FakeImage:
+            def __init__(self, raw):
+                self.raw = raw
+            def convert(self, mode):
+                return self
+            def save(self, target, fmt, **kwargs):
+                target.write(b"fake-jpeg:" + self.raw)
+        image_module = types.ModuleType("PIL.Image")
+        image_module.open = lambda stream: FakeImage(stream.getvalue())
+        image_module.Resampling = types.SimpleNamespace(LANCZOS=1)
+        ops_module = types.ModuleType("PIL.ImageOps")
+        ops_module.fit = lambda image, size, method=None: image
+        pil_module = types.ModuleType("PIL")
+        pil_module.Image = image_module
+        pil_module.ImageOps = ops_module
+
+        def png_data(payload):
+            return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
+
+        with patch.dict(sys.modules, {"PIL": pil_module, "PIL.Image": image_module, "PIL.ImageOps": ops_module}):
+            status, first = self.request(f"/api/projects/{project['id']}/frames/upload", "POST",
+                                         {"scene_id": "s1", "data_url": png_data(b"first image bytes")})
+            self.assertEqual(status, 200)
+            first_path = first["spec"]["script"]["scenes"][0]["image"]["path"]
+            first_file = Path(self.temp.name) / project["id"] / first_path
+            first_bytes = first_file.read_bytes()
+            self.assertTrue(first_path.startswith("assets/sha256/"))
+
+            status, second = self.request(f"/api/projects/{project['id']}/frames/upload", "POST",
+                                          {"scene_id": "s1", "data_url": png_data(b"second image bytes")})
+            self.assertEqual(status, 200)
+        second_path = second["spec"]["script"]["scenes"][0]["image"]["path"]
+        self.assertNotEqual(first_path, second_path)
+        self.assertEqual(first_file.read_bytes(), first_bytes)
+        manifest = json.loads((Path(self.temp.name) / project["id"] / "studio" / "assets.json").read_text(encoding="utf-8"))
+        self.assertEqual([item["asset_version"] for item in manifest["assets"]], [1, 2])
+
+        metadata_path = Path(self.temp.name) / project["id"] / "project.json"
+        metadata_before = metadata_path.read_bytes()
+        status, report = self.request(f"/api/projects/{project['id']}/fingerprints")
+        self.assertEqual(metadata_path.read_bytes(), metadata_before)
+        self.assertEqual(status, 200)
+        self.assertEqual(report["fingerprint_version"], 1)
+        self.assertIn(manifest["assets"][-1]["asset_id"], report["fingerprints"]["assets"])
+        self.assertTrue(report["fingerprints"]["assets"][manifest["assets"][-1]["asset_id"]]["integrity_ok"])
 
 
 if __name__ == "__main__":
