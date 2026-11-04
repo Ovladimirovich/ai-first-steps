@@ -447,11 +447,17 @@ def main():
     ap.add_argument("--scene-bg-dir", default="", help="папка с фоном по ID сцены <ID>.jpg (алиас к --scene-dir)")
     ap.add_argument("--workers", type=int, default=1, help="параллельных процессов отрисовки кадров (1 = один поток); alias: --concurrency")
     ap.add_argument("--scene-titles", default=None, help="JSON-словарь заголовков сцен (для фабрики: --scene-titles scene-titles.json)")
+    ap.add_argument("--timing", default=str(TIMING), help="JSON тайминга (по умолчанию — прежний Pixar)")
+    ap.add_argument("--voice", default="", help="аудио-дорога озвучки (по умолчанию — voice_track-pixar.mp3)")
     args = ap.parse_args()
 
     # --concurrency alias to --workers for factory compatibility
     if args.concurrency and not args.workers:
         args.workers = args.concurrency
+
+    # фабрика передаёт свои пути (--timing/--voice)
+    timing_path = Path(args.timing).resolve()
+    voice_custom = Path(args.voice).resolve() if args.voice else None
 
     global SCENE_TITLES
     if args.scene_titles:
@@ -479,9 +485,9 @@ def main():
             print(f"emotions.json не прочитан: {e}")
 
     # загрузка тайминга
-    if not TIMING.exists():
-        print(f"не найден {TIMING}", file=sys.stderr); sys.exit(1)
-    data = json.loads(TIMING.read_text(encoding="utf-8"))
+    if not timing_path.exists():
+        print(f"не найден {timing_path}", file=sys.stderr); sys.exit(1)
+    data = json.loads(timing_path.read_text(encoding="utf-8"))
     lines = data["lines"]
     total = float(data["total"])
     fps = int(data.get("fps", 30))
@@ -491,9 +497,10 @@ def main():
         print(f"TEST only {args.only} lines -> total {total:.1f}s")
 
     # аудио
-    voice = VOICE if VOICE.exists() else VOICE_PREVIEW
+    voice_src = voice_custom if voice_custom else VOICE
+    voice = voice_src if voice_src.exists() else VOICE_PREVIEW
     if not voice.exists():
-        print(f"нет аудио {VOICE}", file=sys.stderr)
+        print(f"нет аудио {voice_src}", file=sys.stderr)
         args.no_audio = True
 
     # фон картинка если есть
