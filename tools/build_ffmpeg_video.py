@@ -10,11 +10,20 @@ usage:
   python tools/build_ffmpeg_video.py --output preview/test.mp4 --no-audio
   python tools/build_ffmpeg_video.py --only 5                 # первые 5 реплик для теста 20 сек
 """
-import argparse, json, os, re, sys, textwrap, math
+import argparse, json, os, sys, textwrap, math
 from pathlib import Path
 
 # --- пути ---
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from pixar_frame import FrameRenderer, emotion_for
+    HAS_FRAME = True
+except Exception as _e:  # старый плоский режим остаётся доступным
+    Has_FRAME_ERR = _e
+    HAS_FRAME = False
+    FrameRenderer = None
+    emotion_for = None
 TIMING = ROOT / "remotion" / "public" / "timing-pixar.json"
 VOICE = ROOT / "remotion" / "public" / "audio" / "voice_track-pixar.mp3"
 VOICE_PREVIEW = ROOT / "preview" / "voice_track-pixar.mp3"
@@ -58,6 +67,35 @@ SCENE_TITLES = {
     "8.1": "4 причины дружить",
     "8.2": "Челлендж на неделю",
 }
+
+# --- многопроцессная отрисовка кадров (Windows-совместимо: функции на уровне модуля) ---
+_W = {}
+
+
+def _worker_init(scene_dir, sprites, fallback_bg, W, H):
+    from pixar_frame import FrameRenderer
+    _W["r"] = FrameRenderer(W=W, H=H, sprites=sprites, scene_dir=scene_dir, fallback_bg=fallback_bg)
+
+
+def _worker_segment(job):
+    """Рисует кадры одного сегмента. job = (frames_dir, seg, start_frame, total_frames, fps, emotions)"""
+    from PIL import Image
+    frames_dir, seg, start_frame, total_frames, fps, emotions = job
+    typ, text, who, scene, dur, n_frames = seg
+    r = _W["r"]
+    for f in range(n_frames):
+        gidx = start_frame + f
+        t = gidx / fps
+        prog = gidx / max(1, total_frames)
+        if typ == "gap":
+            img = r.render("", "b", scene, s=1.0, is_gap=True, t=t, progress=prog)
+        else:
+            s_val = spring_value(f, fps=fps, damping=13, stiffness=140)
+            img = r.render(text, who, scene, s=s_val, karaoke_frac=(f + 1) / max(1, n_frames),
+                           t=t, progress=prog, emotion=emotions.get(text))
+        img.save(Path(frames_dir) / f"frame_{gidx:06d}.jpg", "JPEG", quality=90)
+    return len(range(n_frames))
+
 
 def hex_to_rgb(h):
     h = h.lstrip("#")
@@ -247,7 +285,7 @@ def draw_pixar_frame(text, who, scene, s, W=1920, H=1080, bg_img=None, karaoke_f
     draw.rounded_rectangle([px, py, px+int(pw*prog), py+int(6*scale)], radius=3, fill=hex_to_rgb(P["yellow"])+(opacity,))
     return img
 
-def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=False, bg_strength=0.18):
+def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=False):
     """
     Рисует 1920x1080 кадр в стиле PixarCard через Pillow:
     - тёплый фон #FFF6E0 + лёгкий градиент/картинка облаков
@@ -268,7 +306,7 @@ def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=Fals
         try:
             bg = Image.open(bg_path).convert("RGB").resize((W, H), Image.LANCZOS)
             # осветляем и смешиваем
-            bg = Image.blend(img, bg, max(0.0, min(1.0, float(bg_strength))))
+            bg = Image.blend(img, bg, 0.18)
             img = bg
             draw = ImageDraw.Draw(img, "RGBA")
         except: pass
@@ -393,14 +431,9 @@ def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=Fals
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", "-o", default=str(OUT_DEFAULT), help="выходной mp4")
-    ap.add_argument("--timing", default=str(TIMING), help="JSON тайминга (по умолчанию — прежний Pixar)")
-    ap.add_argument("--voice", default=None, help="готовая голосовая дорожка; по умолчанию — прежний Pixar")
-    ap.add_argument("--scene-titles", default=None, help="JSON-словарь заголовков сцен")
-    ap.add_argument("--scene-bg-dir", default=None, help="необязательные JPG/PNG-фоны по ID сцены")
     ap.add_argument("--crf", type=int, default=18, help="качество 18=высокое 23=меньше файл")
     ap.add_argument("--preset", default="medium", help="ffmpeg preset ultrafast/medium/slow")
     ap.add_argument("--concurrency", type=int, default=4, help="потоки ffmpeg threads")
-    ap.add_argument("--workers", type=int, default=1, help="параллельных процессов отрисовки кадров (1 = один поток); alias: --concurrency")
     ap.add_argument("--preview", action="store_true", help="быстрый превью 720p crf23 ultrafast")
     ap.add_argument("--no-audio", action="store_true", help="без озвучки (для теста)")
     ap.add_argument("--only", type=int, default=0, help="только первые N реплик (для теста)")
@@ -408,6 +441,12 @@ def main():
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--motion", type=int, default=0, choices=[0,1,2,3], help="0 статика 3-5мин, 1 лёгкий зум, 2 средний, 3 full spring 30fps 12-15мин")
     ap.add_argument("--use-workshop-bg", action="store_true", help="использовать мастерскую pixar-style-preview.jpg как фон (картинка, а не облака)")
+    ap.add_argument("--legacy-flat", action="store_true", help="старый плоский рендер: только карточка, без персонажей и пер-сценных фонов")
+    ap.add_argument("--no-sprites", action="store_true", help="персонажи не рисовать (фон + карточка)")
+    ap.add_argument("--scene-dir", default=str(ASSETS), help="папка с scene_*.jpg и спрайтами bit/masha")
+    ap.add_argument("--scene-bg-dir", default="", help="папка с фоном по ID сцены <ID>.jpg (алиас к --scene-dir)")
+    ap.add_argument("--workers", type=int, default=1, help="параллельных процессов отрисовки кадров (1 = один поток); alias: --concurrency")
+    ap.add_argument("--scene-titles", default=None, help="JSON-словарь заголовков сцен (для фабрики: --scene-titles scene-titles.json)")
     args = ap.parse_args()
 
     # --concurrency alias to --workers for factory compatibility
@@ -429,11 +468,20 @@ def main():
     W, H = args.width, args.height
     print(f"FFmpeg PIXAR — {W}x{H} crf{args.crf} {args.preset} threads{args.concurrency}")
 
+    # эмоции: assets/pixar/emotions.json {"<реплика целиком>": "surprised|happy|neutral"}
+    EMOTIONS = {}
+    emo_file = Path(args.scene_dir) / "emotions.json"
+    if emo_file.exists():
+        try:
+            EMOTIONS = json.loads(emo_file.read_text(encoding="utf-8"))
+            print(f"эмоций из файла: {len(EMOTIONS)}")
+        except Exception as e:
+            print(f"emotions.json не прочитан: {e}")
+
     # загрузка тайминга
-    timing_path = Path(args.timing).resolve()
-    if not timing_path.exists():
-        print(f"не найден {timing_path}", file=sys.stderr); sys.exit(1)
-    data = json.loads(timing_path.read_text(encoding="utf-8"))
+    if not TIMING.exists():
+        print(f"не найден {TIMING}", file=sys.stderr); sys.exit(1)
+    data = json.loads(TIMING.read_text(encoding="utf-8"))
     lines = data["lines"]
     total = float(data["total"])
     fps = int(data.get("fps", 30))
@@ -443,7 +491,7 @@ def main():
         print(f"TEST only {args.only} lines -> total {total:.1f}s")
 
     # аудио
-    voice = Path(args.voice).resolve() if args.voice else (VOICE if VOICE.exists() else VOICE_PREVIEW)
+    voice = VOICE if VOICE.exists() else VOICE_PREVIEW
     if not voice.exists():
         print(f"нет аудио {VOICE}", file=sys.stderr)
         args.no_audio = True
@@ -458,6 +506,7 @@ def main():
         for p in [ASSETS / "classroom_pixar.jpg", ASSETS / "clouds_pixar_bg.jpg", ROOT/"remotion/public/pixar/clouds_pixar_bg.jpg"]:
             if p.exists():
                 bg_path = p; break
+    # --- добавлено из b2a47ef: директория сценных фонов ---
     scene_bg_dir = Path(args.scene_bg_dir).resolve() if args.scene_bg_dir else None
     def bg_for_scene(scene_id):
         if scene_bg_dir and scene_bg_dir.is_dir():
@@ -468,6 +517,18 @@ def main():
                 if candidate.is_file():
                     return candidate
         return bg_path
+
+    # --- новый рендерер «мультфильм с персонажами» ---
+    renderer = None
+    use_character_mode = (args.motion == 3 and not args.legacy_flat and HAS_FRAME)
+    if use_character_mode:
+        renderer = FrameRenderer(W=W, H=H, sprites=not args.no_sprites,
+                                 scene_dir=args.scene_dir, fallback_bg=bg_path)
+        sprites_found = sorted({w for (w, e) in renderer.sprites})
+        scenes_found = sorted(p.stem.replace("scene_", "") for p in Path(args.scene_dir).glob("scene_*.jpg"))
+        print(f"РЕЖИМ ПЕРСОНАЖЕЙ: спрайты {sprites_found or 'нет'} | своих фонов {len(scenes_found)} | fallback {bg_path.name if bg_path else 'градиент'}")
+    elif args.motion == 3 and not HAS_FRAME:
+        print(f"pixar_frame недоступен ({Has_FRAME_ERR}), падаю в плоский режим", file=sys.stderr)
 
     # для motion 3 подготовим базовый фон 1920x1080 один раз
     base_bg_img = None
@@ -503,36 +564,6 @@ def main():
                 draw0.line([(0, y), (W, y)], fill=(r,g,b))
         # заголовки на базовом фоне не рисуем — они будут на каждом кадре отдельно? для простоты добавим заголовок в base_bg? нет, заголовок меняется по сцене, поэтому оставим base без заголовка
         print(f"фон для motion3: {bg_path} workshop={args.use_workshop_bg}")
-
-    scene_base_cache = {}
-    def base_bg_for_scene(scene_id):
-        if base_bg_img is None:
-            return None
-        path = bg_for_scene(scene_id)
-        if path == bg_path or not path or not path.exists():
-            return base_bg_img
-        key = str(path)
-        if key in scene_base_cache:
-            return scene_base_cache[key]
-        from PIL import Image, ImageDraw
-        color = hex_to_rgb(P["bg"])
-        image = Image.new("RGB", (W, H), color)
-        try:
-            source = Image.open(path).convert("RGB").resize((W, H), Image.LANCZOS)
-            if args.use_workshop_bg:
-                image = source
-                overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                draw = ImageDraw.Draw(overlay, "RGBA")
-                for yy in range(int(H * 0.55), H):
-                    alpha = int(90 * (yy - H * 0.55) / (H * 0.45))
-                    draw.line([(0, yy), (W, yy)], fill=(0, 0, 0, alpha))
-                image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
-            else:
-                image = Image.blend(image, source, 0.82)
-        except Exception:
-            return base_bg_img
-        scene_base_cache[key] = image
-        return image
 
     # готовим сегменты: реплика + пауза
     segments = []  # list of (type, text, who, scene, dur)
@@ -578,25 +609,58 @@ def main():
         frames_dir.mkdir(parents=True, exist_ok=True)
         total_frames = int(total * fps)
         print(f"FULL MOTION: {total_frames} кадров {W}x{H} {fps}fps (~12-15 мин), фон workshop={args.use_workshop_bg}")
+
+        frame_idx = 0
+        # --- быстрый путь: отрисовка сегментов в несколько процессов ---
+        if renderer is not None and args.workers and args.workers > 1:
+            import multiprocessing as mp
+            jobs, start = [], 0
+            for typ, text, who, scene, dur in segments:
+                n_frames = int(round(dur * fps))
+                if n_frames == 0:
+                    continue
+                if start + n_frames > total_frames:  # не выходим за длительность
+                    n_frames = total_frames - start
+                if n_frames <= 0:
+                    break
+                jobs.append((str(frames_dir), (typ, text, who, scene, dur, n_frames),
+                             start, total_frames, fps, EMOTIONS))
+                start += n_frames
+            # крупные сегменты вперёд — ровнее загрузка воркеров
+            jobs.sort(key=lambda j: -j[1][5])
+            print(f"многопроцессно: {len(jobs)} сегментов на {args.workers} процесса(ов)")
+            import time as _time
+            t0 = _time.time()
+            done_frames = 0
+            with mp.get_context("spawn" if os.name == "nt" else "fork").Pool(
+                    processes=args.workers, initializer=_worker_init,
+                    initargs=(args.scene_dir, not args.no_sprites, str(bg_path) if bg_path else None, W, H)) as pool:
+                for k, n in enumerate(pool.imap_unordered(_worker_segment, jobs), 1):
+                    done_frames += n
+                    if k % 10 == 0 or k == len(jobs):
+                        el = _time.time() - t0
+                        eta = el / max(1, done_frames) * (total_frames - done_frames) / 60
+                        print(f"  {done_frames}/{total_frames} кадров, {el/60:.1f} мин, осталось ~{eta:.0f} мин")
+            frame_idx = total_frames
+            print(f"сгенерил {frame_idx} кадров за {(_time.time()-t0)/60:.1f} мин в {frames_dir}")
         # подготовим заголовки по сценам для каждого сегмента
         # для каждого сегмента генерим кадры с s = spring(frame_in_seg)
-        frame_idx = 0
-        for seg_i, (typ, text, who, scene, dur) in enumerate(segments):
-            scene_base_bg = base_bg_for_scene(scene)
+        if frame_idx < total_frames:  # последовательный путь
+          for seg_i, (typ, text, who, scene, dur) in enumerate(segments):
             n_frames = int(round(dur * fps))
             if n_frames == 0:
                 continue
             # для gap — просто фон с заголовком
             if typ == "gap":
-                # один кадр фона с заголовком, дублируем
-                # сгенерим один gap-кадр и скопируем
-                gap_bg = bg_for_scene(scene)
-                gap_strength = 0.82 if scene_bg_dir and gap_bg != bg_path else 0.18
-                gap_img = draw_pixar_image("", "b", scene, W=W, H=H, bg_path=gap_bg, is_gap=True, bg_strength=gap_strength)
-                # но если workshop — используем base_bg_img + заголовок
-                if args.use_workshop_bg and scene_base_bg is not None:
-                    # gap с workshop-фоном — просто фон сцены + заголовок
-                    gap_img = scene_base_bg.copy()
+                if renderer is not None:
+                    gap_img = renderer.render("", "b", scene, s=1.0, is_gap=True,
+                                              t=frame_idx / fps, progress=frame_idx / max(1, total_frames))
+                else:
+                    gap_img = draw_pixar_image("", "b", scene, W=W, H=H, bg_path=bg_path, is_gap=True)
+                # но если workshop — используем base_bg_img + заголовок (старый режим)
+                if renderer is None and args.use_workshop_bg and base_bg_img is not None:
+                    # gap с workshop фоном — просто base + заголовок
+                    gap_img = base_bg_img.copy()
                     d = ImageDraw.Draw(gap_img, "RGBA")
                     title = SCENE_TITLES.get(scene, f"Сцена {scene}")
                     font_title = get_font(58, bold=True)
@@ -610,11 +674,18 @@ def main():
                     d.text(((W-bbox2[2])//2, H//2), hint, font=font_hint, fill=(255,255,255,180) if args.use_workshop_bg else (27,42,74,120))
                 gap_path = tmpdir / f"gap_{seg_i}.jpg"
                 gap_img.save(gap_path, "JPEG", quality=92)
-                for _ in range(n_frames):
-                    # копируем один и тот же файл (быстро через ссылку)
-                    dst = frames_dir / f"frame_{frame_idx:06d}.jpg"
-                    shutil.copy(gap_path, dst)
-                    frame_idx += 1
+                if renderer is not None and renderer.camera:
+                    for _ in range(n_frames):
+                        gi = renderer.render("", "b", scene, s=1.0, is_gap=True,
+                                             t=frame_idx / fps, progress=frame_idx / max(1, total_frames))
+                        gi.save(frames_dir / f"frame_{frame_idx:06d}.jpg", "JPEG", quality=90)
+                        frame_idx += 1
+                else:
+                    for _ in range(n_frames):
+                        # копируем один и тот же файл (быстро через ссылку)
+                        dst = frames_dir / f"frame_{frame_idx:06d}.jpg"
+                        shutil.copy(gap_path, dst)
+                        frame_idx += 1
                 if seg_i % 10 == 0:
                     print(f"  gap {seg_i+1}/{len(segments)} {scene} {dur:.2f}s -> {n_frames} кадров")
             else:
@@ -622,11 +693,22 @@ def main():
                 for f in range(n_frames):
                     s = spring_value(f, fps=fps, damping=13, stiffness=140)
                     karaoke_frac = (f + 1) / n_frames
+                    if renderer is not None:
+                        frame_img = renderer.render(
+                            text, who, scene, s=s, karaoke_frac=karaoke_frac,
+                            t=frame_idx / fps,
+                            progress=frame_idx / max(1, total_frames),
+                            emotion=EMOTIONS.get(text),
+                        )
+                        dst = frames_dir / f"frame_{frame_idx:06d}.jpg"
+                        frame_img.save(dst, "JPEG", quality=90)
+                        frame_idx += 1
+                        continue
                     # фон: либо base_bg_img (workshop) либо свежий градиент/облака
-                    if args.use_workshop_bg and scene_base_bg is not None:
-                        # для workshop — каждый кадр это фон сцены + карточка с s + заголовок
+                    if args.use_workshop_bg and base_bg_img is not None:
+                        # для workshop — каждый кадр это base_bg + карточка с s + заголовок
                         # заголовок уже на base? нет, рисуем заголовок каждый кадр
-                        frame_img = scene_base_bg.copy()
+                        frame_img = base_bg_img.copy()
                         d = ImageDraw.Draw(frame_img, "RGBA")
                         title = SCENE_TITLES.get(scene, f"Сцена {scene}")
                         font_title = get_font(58, bold=True)
@@ -639,8 +721,8 @@ def main():
                     else:
                         # облака — генерим фон каждый кадр? слишком долго, используем base_bg без заголовка + карточка
                         # но base_bg без заголовка — добавим заголовок
-                        if scene_base_bg is not None:
-                            frame_img = scene_base_bg.copy()
+                        if base_bg_img is not None:
+                            frame_img = base_bg_img.copy()
                             d = ImageDraw.Draw(frame_img, "RGBA")
                             title = SCENE_TITLES.get(scene, f"Сцена {scene}")
                             font_title = get_font(58, bold=True)
@@ -654,7 +736,7 @@ def main():
                             # для простоты — используем draw_pixar_image для каждого кадра (медленнее)
                             frame_img = draw_pixar_frame(text, who, scene, s, W=W, H=H, bg_img=Image.new("RGB", (W,H), hex_to_rgb(P["bg"])), karaoke_frac=karaoke_frac)
                     dst = frames_dir / f"frame_{frame_idx:06d}.jpg"
-                    frame_img.save(dst, "JPEG", quality=92)
+                    frame_img.save(dst, "JPEG", quality=90)
                     frame_idx += 1
                 if seg_i % 5 == 0:
                     print(f"  line {seg_i+1}/{len(segments)} {scene} {dur:.2f}s {n_frames}к s={spring_value(int(dur*fps//2), fps):.2f} -> frame {frame_idx}")
@@ -773,7 +855,11 @@ def main():
             if voice_idx is not None: amix_inputs.append(f"[{voice_idx}:a]")
             if sfx_idx is not None: amix_inputs.append(f"[{sfx_idx}:a]")
             if music_idx is not None: amix_inputs.append(f"[{music_idx}:a]")
-            filter_a = "".join(amix_inputs) + f"amix=inputs={len(amix_inputs)}:duration=longest:dropout_transition=0[aout]"
+            # normalize=0 — иначе amix делит громкость на число входов (-9.5дБ) и голос становится тихим
+            # alimiter — страховка от клиппинга после сложения
+            filter_a = ("".join(amix_inputs)
+                        + f"amix=inputs={len(amix_inputs)}:duration=longest:dropout_transition=0:normalize=0,"
+                        + "alimiter=limit=0.95[aout]")
             cmd += ["-filter_complex", filter_a, "-map", "0:v", "-map", "[aout]", "-c:v", "libx264", "-preset", args.preset, "-crf", str(args.crf), "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-threads", str(args.concurrency)]
         else:
             # только voice или без аудио
@@ -810,9 +896,7 @@ def main():
             img_path = cache[key]
         else:
             is_gap = typ=="gap"
-            selected_bg = bg_for_scene(scene)
-            strength = 0.82 if scene_bg_dir and selected_bg != bg_path else 0.18
-            img = draw_pixar_image(text, who, scene, W=W, H=H, bg_path=selected_bg, is_gap=is_gap, bg_strength=strength)
+            img = draw_pixar_image(text, who, scene, W=W, H=H, bg_path=bg_path, is_gap=is_gap)
             img_path = tmpdir / f"seg_{idx:03d}_{typ}_{scene.replace('.','_')}.png"
             img.save(img_path, "PNG", compress_level=1)
             cache[key] = img_path
@@ -871,3 +955,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+# --- Added from b2a47ef commit: scene_bg_dir and bg_for_scene ---
+scene_bg_dir = Path(args.scene_bg_dir).resolve() if args.scene_bg_dir else None
+def bg_for_scene(scene_id):
+    if scene_bg_dir and scene_bg_dir.is_dir():
+        safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
+        for ext in (".jpg", ".jpeg", ".png"):
+            candidate = scene_bg_dir / f"{safe_scene}{ext}"
+            if candidate.is_file():
+                return candidate
+    return bg_path

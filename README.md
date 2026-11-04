@@ -65,7 +65,16 @@ cd remotion && npm i && npx remotion browser ensure
 npx remotion render src/index.ts PixarWhyAI ../release/pixar-why-ai-full.mp4 --codec h264 --crf 18 --concurrency 4
 ```
 
-### Pixar 6:19 — FFmpeg (быстро, рекомендуется)
+### Pixar 6:19 — FFmpeg, мультфильм с персонажами (рекомендуется)
+
+```bash
+pip install Pillow numpy imageio-ffmpeg
+python tools/build_ffmpeg_video.py --motion 3 --workers 2 --output release/pixar-why-ai-characters.mp4 --crf 18 --preset medium --concurrency 2
+```
+
+Два персонажа (Бит и Маша) на 25 пер-сценных фонах, камера, эмоции, караоке — [docs/09_CHARACTER_RENDER.md](docs/09_CHARACTER_RENDER.md).
+
+### Pixar 6:19 — FFmpeg слайд-карточки (быстро)
 ```bash
 pip install Pillow moviepy==1.0.3 imageio-ffmpeg
 python tools/build_ffmpeg_video.py --output release/pixar-why-ai-ffmpeg.mp4 --crf 18 --preset medium

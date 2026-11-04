@@ -26,6 +26,27 @@
 * **Remotion:** 25 сцен `pixarScenes/PS*.tsx` + `PixarMain.tsx` + `timing-pixar.json 379с 57 cue` + `voice_track-pixar.mp3 2.9МБ` + чанки `tools/render_pixar_chunks.sh` (по 1500 кадров, докачка) + cloud `render-pixar.yml`
 * **FFmpeg:** `tools/build_ffmpeg_video.py` (114 сегментов: 57 реплик + 57 пауз, Pillow `draw_pixar_image` с `P.bg #FFF6E0` + `PixarCard #243A66` + аватар `B/M` + `wrap_text` 40px + `clouds_pixar_bg.jpg` 0.18) + cloud `render-ffmpeg.yml` (ultrafast 4 мин)
 
+## Character mode — мультфильм с персонажами (новое, рекомендованный финал)
+
+Тот же `build_ffmpeg_video.py --motion 3`, но кадр собирает `tools/pixar_frame.py`:
+пер-сценные фоны + два постоянных персонажа + камера + караоке. Подробно — [09_CHARACTER_RENDER.md](09_CHARACTER_RENDER.md).
+
+```bash
+python tools/build_ffmpeg_video.py --motion 3 --workers 2 \
+    --output release/pixar-why-ai-characters.mp4 --crf 18 --preset medium --concurrency 2
+```
+
+|  | Плоский режим (было) | Character mode (сейчас) |
+|---|---|---|
+| Кадр | карточка + аватар-кружок «Б»/«М» на одном фоне | 25 пер-сценных фонов, полноростовые Бит и Маша, карточка внизу |
+| Анимация | статика / spring карточки | spring + караоке + дыхание и parallax персонажей, панорама камеры, смена эмоций |
+| Время (2 vCPU) | 5:18 (статика medium) | ~29 мин (`--workers 1`) / ~11–20 мин (`--workers 2`) |
+| Когда | нужен текст-слайд за 5 минут | нужен мультфильм для показа детям |
+| Откат | `--legacy-flat` | — |
+
+Персонажи: `assets/pixar/bit*.png`, `masha*.png` (3 эмоции каждому), фоны `assets/pixar/scene_<scene>.jpg`,
+сборка фонов `tools/make_scene_backgrounds.py`, срез белого фона `tools/prepare_pixar_sprites.py`.
+
 ## Гибрид (рекомендуем)
 
 1. **Разработка** — в `Remotion Studio` (`npm run dev` → `PixarWhyAI` → `Play`) — смотри анимацию, правь `PS*.tsx`.

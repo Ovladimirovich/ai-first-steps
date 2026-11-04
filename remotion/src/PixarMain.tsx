@@ -2,7 +2,7 @@ import { AbsoluteFill, Audio, Sequence, staticFile, useVideoConfig } from "remot
 import timing from "../public/timing-pixar.json";
 import { Subtitles } from "./components/Subtitles";
 import { PixarCharacters } from "./components/PixarCharacters";
-import { PS0_1 } from "./pixarScenes/PS0_1";
+import { MyPixarScene } from "./scenes/MyPixarScene";
 import { PS0_2 } from "./pixarScenes/PS0_2";
 import { PS1_1 } from "./pixarScenes/PS1_1";
 import { PS1_2 } from "./pixarScenes/PS1_2";
@@ -33,7 +33,7 @@ import type { SceneProps } from "./scenes";
 export type PixarLine = (typeof timing.lines)[number];
 
 const PIXAR_SCENES: Record<string, React.FC<SceneProps>> = {
-  "0.1": PS0_1, "0.2": PS0_2,
+  "0.1": MyPixarScene, "0.2": PS0_2,
   "1.1": PS1_1, "1.2": PS1_2, "1.3": PS1_3, "1.4": PS1_4,
   "2.1": PS2_1, "2.2": PS2_2, "2.3": PS2_3, "2.4": PS2_4,
   "3.1": PS3_1,
@@ -72,7 +72,7 @@ export const PixarMain: React.FC<{ subs?: boolean }> = ({ subs = true }) => {
           >
             <Scene sceneId={r.id} lines={r.lines} sceneStart={r.start} />
             {/* Персонажи — Pixar-версия, прячем на заставке */}
-            {r.id !== "0.2" && (
+            {r.id !== "0.1" && r.id !== "0.2" && (
               <PixarCharacters
                 lines={r.lines as any}
                 sceneStart={r.start}
