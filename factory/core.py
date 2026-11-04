@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import mimetypes
 import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from .revisions import create_revision, list_revisions as _list_revisions, read_revision as _read_revision
+from .schema_v2 import empty_asset_manifest, merge_v1_view, validate_production, validate_story_v2, v1_to_v2, v2_to_v1
+from .storage import atomic_write_json, project_lock
 from .timing import timing_for
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,22 +55,263 @@ def project_dir(project_id: str) -> Path:
     return DATA_ROOT / safe_id(project_id)
 
 
+def _read_asset_manifest(directory: Path) -> dict:
+    path = directory / "studio" / "assets.json"
+    if not path.exists():
+        return empty_asset_manifest()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Реестр ассетов повреждён: {path}") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("assets"), list):
+        raise ValueError(f"Некорректная структура реестра ассетов: {path}")
+    return value
+
+
+def _read_v2_state(directory: Path, metadata: dict) -> tuple[dict, dict]:
+    revision_id = metadata.get("current_revision_id")
+    if revision_id:
+        try:
+            revision = _read_revision(directory, str(revision_id))
+            return revision["spec"], revision["production"]
+        except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Текущий снимок ревизии {revision_id} повреждён или отсутствует; автоматический откат не выполнен") from exc
+    spec_path, production_path = directory / "spec.json", directory / "production.json"
+    if spec_path.is_file() and production_path.is_file():
+        return json.loads(spec_path.read_text(encoding="utf-8")), json.loads(production_path.read_text(encoding="utf-8"))
+    raise ValueError(f"Не найдены данные текущей ревизии проекта {metadata.get('id', '')}")
+
+
 def load_project(project_id: str) -> dict:
     directory = project_dir(project_id)
     path = directory / "project.json"
     if not path.exists():
         raise FileNotFoundError(project_id)
     project = json.loads(path.read_text(encoding="utf-8"))
-    project["spec"] = json.loads((directory / "spec.json").read_text(encoding="utf-8"))
+    if int(project.get("schema_version", 1)) >= 2:
+        story, production = _read_v2_state(directory, project)
+        validate_story_v2(story)
+        validate_production(production)
+        manifest = _read_asset_manifest(directory)
+        project["spec"] = v2_to_v1(story, production, manifest)
+        if project["spec"].get("script", {}).get("scenes"):
+            validate_spec(project["spec"])
+    else:
+        project["spec"] = json.loads((directory / "spec.json").read_text(encoding="utf-8"))
     return project
+
+
+def _asset_record_for_legacy_path(directory: Path, scene_id: str, relative: str) -> dict | None:
+    candidate = (directory / relative).resolve()
+    if directory.resolve() not in candidate.parents or not candidate.is_file():
+        return None
+    digest_value = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    asset_id = "upload-" + hashlib.sha256(f"{Path(relative).as_posix()}|{digest_value}".encode("utf-8")).hexdigest()[:20]
+    return {"asset_id": asset_id, "type": "scene_image", "target": {"scene_id": scene_id},
+            "sequence": 1, "asset_version": 1, "path": Path(relative).as_posix(), "sha256": digest_value,
+            "mime": mimetypes.guess_type(candidate.name)[0] or "application/octet-stream",
+            "size_bytes": candidate.stat().st_size, "source": "uploaded", "provenance": "legacy_upload",
+            "input_fingerprint": None, "created_at": candidate.stat().st_mtime}
+
+
+def _sync_legacy_assets(directory: Path, story: dict, production: dict, manifest: dict) -> dict:
+    assets = manifest.setdefault("assets", [])
+    by_path = {str(item.get("path")): item for item in assets if item.get("path")}
+    by_id = {str(item.get("asset_id")): item for item in assets if item.get("asset_id")}
+    for scene_id, visual in production.get("visuals", {}).items():
+        if visual.get("image_mode") != "upload":
+            visual["selected_asset_id"] = None
+            continue
+        relative = visual.get("legacy_path")
+        if not relative:
+            continue
+        normalized = Path(str(relative)).as_posix()
+        record = by_path.get(normalized)
+        candidate = (directory / normalized).resolve()
+        if directory.resolve() not in candidate.parents or not candidate.is_file():
+            # Keep the legacy reference visible; the migration planner will report missing files.
+            continue
+        current_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        if record and record.get("sha256") == current_hash:
+            visual["selected_asset_id"] = record["asset_id"]
+            continue
+        record = _asset_record_for_legacy_path(directory, str(scene_id), normalized)
+        if record:
+            next_asset_version = 1 + max((int(item.get("asset_version", 0)) for item in assets
+                                          if item.get("type") == "scene_image" and
+                                          item.get("target", {}).get("scene_id") == str(scene_id)), default=0)
+            record["asset_version"] = next_asset_version
+            record["sequence"] = next_asset_version
+            existing = by_id.get(record["asset_id"])
+            if existing is None:
+                assets.append(record)
+                by_id[record["asset_id"]] = record
+            visual["selected_asset_id"] = record["asset_id"]
+            by_path[normalized] = record
+    return manifest
+
+
+def _metadata_only(project: dict) -> dict:
+    return {key: value for key, value in project.items() if key not in ("spec", "production", "_storage", "_native_update")}
+
+
+def _mirror_v2(directory: Path, story: dict, production: dict) -> None:
+    atomic_write_json(directory / "spec.json", story)
+    atomic_write_json(directory / "production.json", production)
+
+
+def _create_v2_project(project: dict, story: dict, production: dict) -> None:
+    directory = project_dir(project["id"])
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest = empty_asset_manifest()
+    project.update({"schema_version": 2, "project_revision": int(project.get("revision", 1)),
+                    "spec_revision": 1, "production_revision": 1, "revision_sequence": 1})
+    revision = create_revision(directory, story, production, sequence=1,
+                               project_revision=int(project.get("revision", 1)), spec_revision=1,
+                               production_revision=1, parent_revision_id=None,
+                               changed_domains=["baseline"], actor="system", reason="project_created")
+    project["current_revision_id"] = revision["revision_id"]
+    atomic_write_json(directory / "studio" / "assets.json", manifest)
+    _mirror_v2(directory, story, production)
+    atomic_write_json(directory / "project.json", _metadata_only(project))
 
 
 def save_project(project: dict) -> None:
     directory = project_dir(project["id"])
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "spec.json").write_text(json.dumps(project["spec"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    metadata = {k: v for k, v in project.items() if k != "spec"}
-    (directory / "project.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with project_lock(project["id"]):
+        metadata_path = directory / "project.json"
+        try:
+            stored_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stored_metadata = {}
+        if stored_metadata:
+            current_revision = int(stored_metadata.get("revision", 1))
+            if int(project.get("revision", -1)) != current_revision + 1:
+                raise ValueError("Проект изменился в другой вкладке. Обновите страницу перед сохранением.")
+        if int(stored_metadata.get("schema_version", 1)) < 2:
+            # Existing v1 projects stay v1 until the user explicitly migrates them.
+            atomic_write_json(directory / "spec.json", project["spec"])
+            atomic_write_json(metadata_path, _metadata_only(project))
+            return
+
+        current_story, current_production = _read_v2_state(directory, stored_metadata)
+        manifest = _read_asset_manifest(directory)
+        native_update = project.get("_native_update")
+        if native_update:
+            story = copy.deepcopy(native_update["spec"])
+            production = copy.deepcopy(native_update["production"])
+        else:
+            story, production = merge_v1_view(project["spec"], current_story, current_production)
+        manifest = _sync_legacy_assets(directory, story, production, manifest)
+        validate_story_v2(story)
+        validate_production(production)
+        story_changed = digest(story) != digest(current_story)
+        production_changed = digest(production) != digest(current_production)
+        current_revision = int(stored_metadata.get("revision", 1))
+        next_project_revision = max(int(project.get("revision", current_revision)), current_revision)
+        if (story_changed or production_changed) and next_project_revision <= current_revision:
+            next_project_revision = current_revision + 1
+        spec_revision = int(stored_metadata.get("spec_revision", 1)) + int(story_changed)
+        production_revision = int(stored_metadata.get("production_revision", 1)) + int(production_changed)
+        revision_id = stored_metadata.get("current_revision_id")
+        sequence = int(stored_metadata.get("revision_sequence", 1))
+        if story_changed or production_changed:
+            sequence += 1
+            created = create_revision(directory, story, production, sequence=sequence,
+                                      project_revision=next_project_revision,
+                                      spec_revision=spec_revision,
+                                      production_revision=production_revision,
+                                      parent_revision_id=revision_id,
+                                      changed_domains=[name for name, changed in (("spec", story_changed), ("production", production_changed)) if changed],
+                                      actor="user", reason="accepted_legacy_patch")
+            revision_id = created["revision_id"]
+        atomic_write_json(directory / "studio" / "assets.json", manifest)
+        updated = _metadata_only(project)
+        updated.update({"schema_version": 2, "revision": next_project_revision,
+                        "project_revision": next_project_revision,
+                        "spec_revision": spec_revision, "production_revision": production_revision,
+                        "revision_sequence": sequence, "current_revision_id": revision_id})
+        # The metadata pointer is the commit point; readers use its immutable revision snapshot.
+        atomic_write_json(metadata_path, updated)
+        _mirror_v2(directory, story, production)
+        project.update({"schema_version": 2, "revision": next_project_revision,
+                        "project_revision": next_project_revision,
+                        "spec_revision": spec_revision, "production_revision": production_revision,
+                        "revision_sequence": sequence, "current_revision_id": revision_id})
+
+
+def get_studio_document(project_id: str) -> dict:
+    project = load_project(project_id)
+    directory = project_dir(project_id)
+    if int(project.get("schema_version", 1)) >= 2:
+        story, production = _read_v2_state(directory, project)
+        manifest = _read_asset_manifest(directory)
+        schema_version = 2
+    else:
+        story, production = v1_to_v2(project["spec"])
+        manifest = empty_asset_manifest()
+        schema_version = 1
+    return {"project_id": project_id, "schema_version": schema_version,
+            "project_revision": int(project.get("revision", 1)),
+            "spec_revision": int(project.get("spec_revision", 0)),
+            "production_revision": int(project.get("production_revision", 0)),
+            "current_revision_id": project.get("current_revision_id"),
+            "spec": story, "production": production, "assets": manifest,
+            "migration_required": schema_version == 1}
+
+
+def project_revisions(project_id: str) -> list[dict]:
+    if int(json.loads((project_dir(project_id) / "project.json").read_text(encoding="utf-8")).get("schema_version", 1)) < 2:
+        return []
+    metadata = json.loads((project_dir(project_id) / "project.json").read_text(encoding="utf-8"))
+    return [dict(item, is_current=item.get("revision_id") == metadata.get("current_revision_id"))
+            for item in _list_revisions(project_dir(project_id))]
+
+
+def get_project_revision(project_id: str, revision_id: str) -> dict:
+    directory = project_dir(project_id)
+    metadata = json.loads((directory / "project.json").read_text(encoding="utf-8"))
+    if int(metadata.get("schema_version", 1)) < 2:
+        raise ValueError("Сначала выполните явную миграцию проекта на v2")
+    revision = _read_revision(directory, revision_id)
+    return {key: value for key, value in revision.items() if key != "production"} | {
+        "spec": revision["spec"], "production": revision["production"]}
+
+
+def restore_project_revision(project_id: str, revision_id: str, expected_revision: int) -> dict:
+    directory = project_dir(project_id)
+    with project_lock(project_id):
+        metadata_path = directory / "project.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if int(metadata.get("schema_version", 1)) < 2:
+            raise ValueError("Сначала выполните явную миграцию проекта на v2")
+        if int(metadata.get("revision", 1)) != int(expected_revision):
+            raise ValueError("Проект изменился после просмотра истории. Обновите список ревизий.")
+        target = _read_revision(directory, revision_id)
+        current_story, current_production = _read_v2_state(directory, metadata)
+        story_changed = digest(current_story) != digest(target["spec"])
+        production_changed = digest(current_production) != digest(target["production"])
+        if not story_changed and not production_changed:
+            return load_project(project_id)
+        project_revision = int(metadata.get("revision", 1)) + 1
+        spec_revision = int(metadata.get("spec_revision", 1)) + int(story_changed)
+        production_revision = int(metadata.get("production_revision", 1)) + int(production_changed)
+        sequence = int(metadata.get("revision_sequence", 1)) + 1
+        created = create_revision(directory, target["spec"], target["production"], sequence=sequence,
+                                  project_revision=project_revision, spec_revision=spec_revision,
+                                  production_revision=production_revision,
+                                  parent_revision_id=metadata.get("current_revision_id"),
+                                  changed_domains=[name for name, changed in (("spec", story_changed), ("production", production_changed)) if changed],
+                                  actor="user", restored_from=revision_id, reason="restore_snapshot")
+        restored_title = str(target["spec"].get("intent", {}).get("theme") or "Новый ролик")[:80]
+        updated = {**metadata, "revision": project_revision, "project_revision": project_revision,
+                   "spec_revision": spec_revision, "production_revision": production_revision, "revision_sequence": sequence,
+                   "current_revision_id": created["revision_id"], "title": restored_title,
+                   "updated_at": time.time()}
+        atomic_write_json(metadata_path, updated)
+        _mirror_v2(directory, target["spec"], target["production"])
+        return load_project(project_id)
 
 
 def list_projects() -> list[dict]:
@@ -90,11 +336,12 @@ def create_project(payload: dict) -> dict:
     if style not in PALETTES:
         style = "warm_workshop"
     project_id = uuid.uuid4().hex[:12]
-    spec = new_spec(theme, payload.get("audience", "Дети 11–14 лет"), duration, style)
+    legacy_spec = new_spec(theme, payload.get("audience", "Дети 11–14 лет"), duration, style)
+    story, production = v1_to_v2(legacy_spec)
     project = {"id": project_id, "title": theme[:80] or "Новый ролик", "revision": 1,
-               "current_step": 0, "created_at": time.time(), "updated_at": time.time(), "spec": spec}
-    save_project(project)
-    return project
+               "current_step": 0, "created_at": time.time(), "updated_at": time.time()}
+    _create_v2_project(project, story, production)
+    return load_project(project_id)
 
 
 def draft_script(spec: dict) -> dict:
