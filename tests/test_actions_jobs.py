@@ -25,10 +25,13 @@ class _TempProjects(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.data_patch = patch("factory.core.DATA_ROOT", Path(self.tmp.name))
         self.data_patch.start()
+        self.settings_patch = patch("factory.action_service.load_settings", return_value={"text_provider": "demo"})
+        self.settings_patch.start()
         set_executor(_execute_job)
 
     def tearDown(self):
         set_executor(_execute_job)
+        self.settings_patch.stop()
         self.data_patch.stop()
         self.tmp.cleanup()
 
