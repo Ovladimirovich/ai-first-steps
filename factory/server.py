@@ -5,7 +5,6 @@ import io
 import json
 import mimetypes
 import re
-import threading
 import time
 import uuid
 import urllib.parse
@@ -19,12 +18,21 @@ from .assets import register_asset_bytes
 from .drafts import commit_project_draft, get_project_draft, save_project_draft
 from .migrations import apply_v1_migration, migration_plan
 from .pipeline import get_job, plan, run
-from .providers import ProviderError, draft_with_gigachat, draft_with_llama, test_connection, test_gigachat_connection
+from .actions import action_views, get_action, verify_action_log
+from .action_service import (apply_action, confirm_action, get_candidate, propose_script_draft,
+                             reject_action, retry_action_job)
+from .jobs import cancel_job, list_jobs, recover_jobs
+from .providers import ProviderError, test_connection, test_gigachat_connection
 from .settings import gigachat_credentials, load_settings, save_settings
 
 WEB = Path(__file__).resolve().parent / "web"
-TEXT_PROVIDER_LOCK = threading.Lock()
 
+def _legacy_job_state(job):
+    if not job:
+        return job
+    mapped = dict(job)
+    mapped["state"] = {"completed": "done", "failed": "error", "cancelled": "error"}.get(job.get("state"), job.get("state"))
+    return mapped
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "AIVideoFactory/0.1"
@@ -142,8 +150,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     p = load_project(project_id)
                     job_id = urllib.parse.parse_qs(parsed.query).get("job", [""])[0]
-                    job = get_job(job_id) if job_id else None
-                    return self._json(200, {"artifacts": artifact_state(p), "job": job})
+                    job = get_job(job_id, project_id) if job_id else None
+                    return self._json(200, {"artifacts": artifact_state(p), "job": _legacy_job_state(job)})
                 except FileNotFoundError:
                     return self._error("Ролик не найден", 404)
             if len(parts) == 4 and parts[3] == "artifacts":
@@ -153,8 +161,33 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error("Ролик не найден", 404)
             if len(parts) == 4 and parts[3] == "jobs":
                 job_id = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
-                job = get_job(job_id)
+                if not job_id:
+                    return self._json(200, {"jobs": list_jobs(parts[2])})
+                job = get_job(job_id, parts[2])
+                return self._json(200, _legacy_job_state(job) or {"state": "missing"})
+            if len(parts) == 5 and parts[3] == "jobs":
+                job = get_job(parts[4], parts[2])
                 return self._json(200, job or {"state": "missing"})
+            if len(parts) == 4 and parts[3] == "actions":
+                try:
+                    journal = verify_action_log(parts[2])
+                    return self._json(200, {"valid": journal["valid"], "event_count": journal["event_count"],
+                                            "latest_event_hash": journal["latest_event_hash"],
+                                            "events": journal["events"], "actions": action_views(parts[2])})
+                except ValueError as exc:
+                    return self._error(exc, 409)
+            if len(parts) == 5 and parts[3] == "actions":
+                try:
+                    action = get_action(parts[2], parts[4])
+                    if action.get("status") in ("candidate_ready", "apply_pending"):
+                        candidate = get_candidate(parts[2], parts[4])
+                        action["candidate_spec"] = candidate["spec"]
+                        action["base_spec"] = candidate["base_spec"]
+                    return self._json(200, action)
+                except FileNotFoundError:
+                    return self._error("Действие не найдено", 404)
+                except ValueError as exc:
+                    return self._error(exc, 409)
             if len(parts) == 3:
                 try:
                     return self._json(200, load_project(parts[2]))
@@ -170,7 +203,26 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/projects":
                 project = create_project(body)
                 return self._json(201, project)
-            if len(parts := path.strip("/").split("/")) == 5 and parts[:2] == ["api", "projects"] and parts[3:] == ["migration", "apply"]:
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "actions":
+                if body.get("kind", "script-draft") != "script-draft":
+                    return self._error("Поддерживается только действие script-draft")
+                return self._json(201, propose_script_draft(parts[2]))
+            if len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "actions":
+                action_id, verb = parts[4], parts[5]
+                if verb == "confirm":
+                    return self._json(202, confirm_action(parts[2], action_id, body))
+                if verb == "apply":
+                    return self._json(200, apply_action(parts[2], action_id, body))
+                if verb == "reject":
+                    return self._json(200, reject_action(parts[2], action_id))
+            if len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "jobs":
+                job_id, verb = parts[4], parts[5]
+                if verb == "cancel":
+                    return self._json(200, cancel_job(parts[2], job_id))
+                if verb == "retry":
+                    return self._json(202, retry_action_job(parts[2], job_id, body))
+            if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3:] == ["migration", "apply"]:
                 result = apply_v1_migration(parts[2], int(body.get("expected_revision", 0)),
                                             str(body.get("source_fingerprint", "")))
                 return self._json(200, result)
@@ -231,25 +283,7 @@ class Handler(BaseHTTPRequestHandler):
                 project = load_project(parts[2])
                 action = parts[3]
                 if action == "script-draft":
-                    spec = project["spec"]
-                    if not spec.get("intent", {}).get("theme", "").strip():
-                        return self._error("Введите тему ролика")
-                    with TEXT_PROVIDER_LOCK:
-                        settings = load_settings()
-                        if settings["text_provider"] == "llama_cpp":
-                            project["spec"] = draft_with_llama(spec, settings)
-                        elif settings["text_provider"] == "gigachat":
-                            if not settings.get("gigachat_cloud_ack"):
-                                return self._error("Подтвердите в настройках, что сценарий отправляется в облачный GigaChat.")
-                            project["spec"] = draft_with_gigachat(spec, settings, gigachat_credentials())
-                        else:
-                            from .core import draft_script
-                            project["spec"] = draft_script(spec)
-                    validate_spec(project["spec"])
-                    project["revision"] += 1
-                    project["updated_at"] = time.time()
-                    save_project(project)
-                    return self._json(200, project)
+                    return self._error("Непроверенный прямой draft отключён. Создайте предложение через /actions, подтвердите его, затем отдельно просмотрите и примените кандидат.", 409)
                 if action in ("voice-plan", "frames-plan", "render-plan"):
                     stage = action.removesuffix("-plan").replace("-", "_")
                     if stage == "render":
@@ -258,7 +292,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, result)
                 if action in ("voice-run", "frames-run", "render-run"):
                     stage = action.removesuffix("-run").replace("-", "_")
-                    job = run(project, str(body.get("plan_id", "")), stage, body.get("kind"))
+                    job = run(project, str(body.get("plan_id", "")), stage, body.get("kind"), body.get("confirmation"))
                     return self._json(202, job)
             return self.send_error(404)
         except FileNotFoundError:
@@ -266,7 +300,9 @@ class Handler(BaseHTTPRequestHandler):
         except ProviderError as exc:
             return self._error(exc, 400)
         except ValueError as exc:
-            return self._error(exc, 409 if "устар" in str(exc).lower() or "изменил" in str(exc).lower() else 400)
+            detail = str(exc).lower()
+            status = 409 if any(word in detail for word in ("устар", "изменил", "журнал", "целост", "hash-chain", "отпечаток")) else 400
+            return self._error(exc, status)
         except Exception as exc:
             return self._error(exc, 500)
 
@@ -312,8 +348,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as exc:
             return self._error(exc)
 
-
 def serve(host="0.0.0.0", port=7860):
+    recovered = recover_jobs()
+    if recovered["queued"] or recovered["interrupted"]:
+        print(f"Восстановление очереди: повторно поставлено {recovered['queued']}, прервано перезапуском {recovered['interrupted']}")
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"AI Video Factory открыта: http://localhost:{port} (слушает {host}:{port})")
     try:
