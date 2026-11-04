@@ -20,3 +20,20 @@
 .action-progress p{font-size:11px;color:#68758c}
 .del-button:disabled{opacity:.35;cursor:not-allowed}
 @media(max-width:720px){.action-confirm .two-col{grid-template-columns:1fr 120px}.action-diff-row{grid-template-columns:1fr 1fr}.action-diff-row>span{grid-column:1/-1}}
+
+/* F5: immutable visual variants and prompt history */
+.visual-field{margin:12px 0}
+.visual-field textarea{min-height:70px}
+.visual-field select[multiple]{min-height:84px}
+.save-visual-prompt{width:100%;margin:0 0 9px}
+.variant-history{margin-top:17px;padding-top:12px;border-top:1px solid var(--line)}
+.variant-history h5{margin:0 0 10px;font:700 11px Manrope;color:#56647c}
+.variant-card{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;padding:9px;margin:8px 0;border:1px solid #e9edf4;border-radius:10px;background:#fff}
+.variant-card>img{width:92px;height:70px;object-fit:cover;border-radius:7px;background:#f3f4f7}
+.variant-title{font-size:10px;font-weight:700;color:#58657a}
+.variant-prompt{margin-top:5px;color:#798397;font-size:9px;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere}
+.variant-prompt b{color:#65728a}
+.variant-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.variant-actions button{padding:7px 9px;font-size:10px}
+.variant-body{min-width:0}
+@media(max-width:720px){.variant-card{grid-template-columns:76px minmax(0,1fr)}.variant-card>img{width:76px;height:65px}}

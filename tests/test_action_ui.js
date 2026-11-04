@@ -76,4 +76,19 @@ html = vm.runInContext('renderScript()', context);
 assert.match(html, /actionCloudConsent/);
 assert.match(html, /Максимальная стоимость запроса/);
 
-console.log('F4 UI render-state tests passed.');
+const sceneProject = {
+  id: 'visual-project',
+  title: 'Visual test',
+  spec: { intent: { theme: 'Visual test' }, script: { scenes: [{ id: 'scene-1', title: 'Кадр', lines: [], visual_note: 'Светлая сцена', image: { mode: 'style' } }] }, heroes: [] },
+};
+const variant = { asset_id: 'asset-1', asset_version: 1, type: 'scene_image', target: { scene_id: 'scene-1' }, path: 'assets/sha256/ab/image.png', state: 'created', available: true, prompt: { text: 'Тёплая мастерская <уютно>', negative: 'текст' } };
+vm.runInContext(`project = ${JSON.stringify(sceneProject)}; currentStep = 3; activeAction = null; studio = { schema_version: 2, production: { visuals: { 'scene-1': { description: 'Описание', prompt: { text: 'Сохранённый prompt', negative: '' }, reference_asset_ids: [] } } } }; visualVariants = ${JSON.stringify([variant])}; artifacts = { frames: 'missing' };`, context);
+html = vm.runInContext('renderFrames()', context);
+assert.match(html, /data-visual-prompt/);
+assert.match(html, /data-visual-negative/);
+assert.match(html, /data-upload-variant/);
+assert.match(html, /Проверить/);
+assert.match(html, /Тёплая мастерская &lt;уютно&gt;/);
+assert.match(html, /генераторы изображений пока не вызываются/);
+
+console.log('F4/F5 UI render-state tests passed.');

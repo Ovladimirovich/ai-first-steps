@@ -24,6 +24,9 @@ from .action_service import (apply_action, confirm_action, get_candidate, propos
 from .jobs import cancel_job, list_jobs, recover_jobs
 from .providers import ProviderError, test_connection, test_gigachat_connection
 from .settings import gigachat_credentials, load_settings, save_settings
+from .visuals import (create_visual_variant, deselect_visual_variant, list_visual_variants,
+                      reject_visual_variant, review_visual_variant, select_visual_variant,
+                      update_visual_prompt)
 
 WEB = Path(__file__).resolve().parent / "web"
 
@@ -101,6 +104,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"projects": list_projects()})
         if path.startswith("/api/projects/"):
             parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[3] == "visual-variants":
+                try:
+                    scene_id = urllib.parse.parse_qs(parsed.query).get("scene_id", [None])[0]
+                    return self._json(200, list_visual_variants(parts[2], scene_id))
+                except FileNotFoundError:
+                    return self._error("Ролик или визуальный вариант не найден", 404)
+                except ValueError as exc:
+                    return self._error(exc, 409)
             if len(parts) == 4 and parts[3] == "studio":
                 try:
                     return self._json(200, get_studio_document(parts[2]))
@@ -204,6 +215,46 @@ class Handler(BaseHTTPRequestHandler):
                 project = create_project(body)
                 return self._json(201, project)
             parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "visual-variants":
+                scene_id = str(body.get("scene_id", ""))
+                data_url = str(body.get("data_url", ""))
+                match = re.fullmatch(r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)", data_url)
+                if not scene_id or not match:
+                    return self._error("Укажите сцену и выберите изображение PNG, JPG или WebP")
+                try:
+                    image_bytes = base64.b64decode(match.group(2), validate=True)
+                    if len(image_bytes) > 3_500_000:
+                        return self._error("Вариант изображения слишком большой (максимум 3,5 МБ)")
+                    from PIL import Image
+                    with Image.open(io.BytesIO(image_bytes)) as image:
+                        width, height = image.size
+                        image_format = str(image.format or "").upper()
+                        image.verify()
+                    expected = {"png": ("PNG", ".png", "image/png"),
+                                "jpeg": ("JPEG", ".jpg", "image/jpeg"),
+                                "webp": ("WEBP", ".webp", "image/webp")}[match.group(1)]
+                    if image_format != expected[0] or width <= 0 or height <= 0 or width > 8192 or height > 8192 or width * height > 40_000_000:
+                        return self._error("Формат или размеры изображения не поддерживаются (максимум 8192×8192)")
+                except Exception as exc:
+                    return self._error(f"Не удалось проверить изображение: {exc}")
+                result = create_visual_variant(parts[2], scene_id, image_bytes,
+                                               expected_revision=int(body.get("expected_revision", -1)),
+                                               mime=expected[2], extension=expected[1],
+                                               prompt=body.get("prompt"))
+                return self._json(201, result)
+            if len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "visual-variants":
+                asset_id, verb = parts[4], parts[5]
+                if verb == "review":
+                    return self._json(200, review_visual_variant(parts[2], asset_id))
+                if verb == "select":
+                    return self._json(200, select_visual_variant(parts[2], asset_id,
+                                                                 int(body.get("expected_revision", -1))))
+                if verb == "deselect":
+                    return self._json(200, deselect_visual_variant(parts[2], asset_id,
+                                                                   int(body.get("expected_revision", -1))))
+                if verb == "reject":
+                    return self._json(200, reject_visual_variant(parts[2], asset_id,
+                                                                 int(body.get("expected_revision", -1))))
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "actions":
                 if body.get("kind", "script-draft") != "script-draft":
                     return self._error("Поддерживается только действие script-draft")
@@ -327,6 +378,16 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError) as exc:
                 return self._error(exc)
         parts = path.strip("/").split("/")
+        if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "visuals":
+            try:
+                body = self._body()
+                result = update_visual_prompt(parts[2], parts[4], body)
+                return self._json(200, result)
+            except FileNotFoundError:
+                return self._error("Ролик не найден", 404)
+            except ValueError as exc:
+                detail = str(exc).lower()
+                return self._error(exc, 409 if "изменил" in detail or "устар" in detail else 400)
         if len(parts) != 3 or parts[:2] != ["api", "projects"]:
             return self.send_error(404)
         try:

@@ -44,5 +44,6 @@ Desktop.ini
 .env.*.local
 
 # Python
+.venv/
 __pycache__/
 *.pyc
