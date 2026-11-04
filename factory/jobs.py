@@ -96,12 +96,26 @@ def _job_path(project_id: str, job_id: str) -> Path:
     return _jobs_dir(project_id) / f"{job_id}.json"
 
 def _read_job(project_id: str, job_id: str) -> dict:
-    try:
-        value = json.loads(_job_path(project_id, job_id).read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise
-    except (OSError, ValueError) as exc:
-        raise ValueError("Запись задачи повреждена") from exc
+    path = _job_path(project_id, job_id)
+    # Serialize same-process readers with atomic job replacement, and tolerate brief
+    # Windows file-sharing/antivirus locks while the worker replaces the JSON file.
+    with project_lock(project_id):
+        for attempt in range(5):
+            try:
+                raw = path.read_text(encoding="utf-8")
+                break
+            except FileNotFoundError:
+                raise
+            except PermissionError as exc:
+                if attempt == 4:
+                    raise ValueError("Файл задачи временно недоступен для чтения") from exc
+                time.sleep(0.025 * (attempt + 1))
+            except OSError as exc:
+                raise ValueError("Не удалось прочитать файл задачи") from exc
+        try:
+            value = json.loads(raw)
+        except ValueError as exc:
+            raise ValueError("Запись задачи повреждена") from exc
     if (not isinstance(value, dict) or value.get("id") != str(job_id) or
             value.get("project_id") != str(project_id) or value.get("state") not in VALID_STATES):
         raise ValueError("Некорректная запись задачи")

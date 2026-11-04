@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from factory.actions import append_action_event, get_action, verify_action_log
 from factory.action_service import apply_action, confirm_action, get_candidate, propose_script_draft
 from factory.core import create_project, draft_script, load_project, new_spec, project_dir, save_project
-from factory.jobs import (_job_path, cancel_job, create_job, get_job, recover_jobs, retry_job, set_executor)
+from factory.jobs import (_job_path, _read_job, cancel_job, create_job, get_job, recover_jobs, retry_job, set_executor)
 from factory.pipeline import _execute_job, plan, run
 from factory.storage import atomic_write_json
 from factory.server import Handler
@@ -248,6 +248,25 @@ class PersistentQueueTests(_TempProjects):
                 "cost_ceiling": {"amount": 0, "currency": "EUR"},
                 "privacy_scope": "local", "expires_at": time.time() + 3600}
 
+    def test_job_read_retries_transient_windows_file_lock(self):
+        project_id, job_id = "read-lock-project", "a" * 32
+        path = _job_path(project_id, job_id)
+        atomic_write_json(path, {"id": job_id, "project_id": project_id, "state": "queued"})
+        original_read_text = Path.read_text
+        denied = 0
+
+        def flaky_read_text(file_path, *args, **kwargs):
+            nonlocal denied
+            if file_path == path and denied < 2:
+                denied += 1
+                raise PermissionError("temporary Windows sharing violation")
+            return original_read_text(file_path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", flaky_read_text):
+            result = _read_job(project_id, job_id)
+        self.assertEqual(result["state"], "queued")
+        self.assertEqual(denied, 2)
+
     def test_one_worker_cancel_and_retry(self):
         first_started, release_first = threading.Event(), threading.Event()
         state_lock = threading.Lock()
@@ -377,6 +396,12 @@ class ActionApiTests(_TempProjects):
                 return response.status, json.loads(response.read().decode())
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read().decode())
+
+    def test_job_read_errors_return_json_instead_of_server_traceback(self):
+        with patch("factory.server.get_job", side_effect=ValueError("Файл задачи временно недоступен для чтения")):
+            status, result = self.request(f"/api/projects/{self.project['id']}/jobs/{'a' * 32}")
+        self.assertEqual(status, 503)
+        self.assertIn("временно недоступен", result["error"])
 
     def test_action_endpoints_and_legacy_job_state_mapping(self):
         from factory import action_service

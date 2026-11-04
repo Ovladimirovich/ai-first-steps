@@ -19,7 +19,7 @@ The legacy `POST /api/projects/{project_id}/script-draft` route remains present 
 
 ## Jobs
 
-Jobs are stored as atomic JSON records under `studio/jobs/`; plans are persisted under `studio/plans/`. Canonical states are `queued`, `running`, `completed`, `failed`, and `cancelled`. The existing legacy `GET /jobs?id=...` facade still maps `completed` to `done` and `failed`/`cancelled` to `error`.
+Jobs are stored as atomic JSON records under `studio/jobs/`; plans are persisted under `studio/plans/`. Canonical states are `queued`, `running`, `completed`, `failed`, and `cancelled`. The existing legacy `GET /jobs?id=...` facade still maps `completed` to `done` and `failed`/`cancelled` to `error`. Job reads serialize with in-process atomic updates and retry brief Windows sharing violations; a persistent read lock returns a JSON 503 response rather than an uncaught request-thread traceback.
 
 - `GET /api/projects/{project_id}/jobs` lists persistent jobs.
 - `POST /api/projects/{project_id}/jobs/{job_id}/cancel` cancels queued work or requests cancellation of running work.

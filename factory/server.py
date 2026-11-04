@@ -165,6 +165,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, {"artifacts": artifact_state(p), "job": _legacy_job_state(job)})
                 except FileNotFoundError:
                     return self._error("Ролик не найден", 404)
+                except ValueError as exc:
+                    return self._error(exc, 503)
             if len(parts) == 4 and parts[3] == "artifacts":
                 try:
                     return self._json(200, artifact_state(load_project(parts[2])))
@@ -174,11 +176,17 @@ class Handler(BaseHTTPRequestHandler):
                 job_id = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
                 if not job_id:
                     return self._json(200, {"jobs": list_jobs(parts[2])})
-                job = get_job(job_id, parts[2])
-                return self._json(200, _legacy_job_state(job) or {"state": "missing"})
+                try:
+                    job = get_job(job_id, parts[2])
+                    return self._json(200, _legacy_job_state(job) or {"state": "missing"})
+                except ValueError as exc:
+                    return self._error(exc, 503)
             if len(parts) == 5 and parts[3] == "jobs":
-                job = get_job(parts[4], parts[2])
-                return self._json(200, job or {"state": "missing"})
+                try:
+                    job = get_job(parts[4], parts[2])
+                    return self._json(200, job or {"state": "missing"})
+                except ValueError as exc:
+                    return self._error(exc, 503)
             if len(parts) == 4 and parts[3] == "actions":
                 try:
                     journal = verify_action_log(parts[2])
