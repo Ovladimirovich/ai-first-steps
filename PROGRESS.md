@@ -29,12 +29,13 @@
 | Кэш | ✅ повторно используются неизменённые MP3 реплик, кадры и MP4-сегменты сцен; смета показывает число изменившихся сцен |
 | M2 — настоящие текст и голос | 🟡 адаптеры llama.cpp (`127.0.0.1:8081`) и GigaChat добавлены; реальный запуск нужно проверить локально, TTS пока демо |
 | M3 — картинки на сцену и частичная пересборка MP4 | 🟡 загрузка своего фона на сцену и сборка только изменившихся сегментов готовы; генерация картинок сервисом — следующий шаг |
-| Studio F1 — схема/ревизии/миграция | ✅ v2 spec + production, v1 adapter, явный dry-run/apply, snapshots/restore, persisted drafts API; UI draft wiring остаётся открытым |
-| Studio F2 — ассеты/fingerprints | ✅ content-addressed asset versions, append-only manifest, per-line/scene/timing/frame/segment fingerprints, отдельные Preview/Final fingerprints, `/api/projects/{id}/fingerprints`; локальный end-to-end MP4 smoke-test нужен после переноса в `main` |
-| Studio F3 — журнал/очередь | ⏳ append-only action log, consent/quote gates и persistent sequential job queue |
+| Studio F1 — схема/ревизии/миграция | ✅ v2 spec + production, v1 adapter, явный dry-run/apply, snapshots/restore, persisted drafts API; legacy migration remains explicit |
+| Studio F2 — ассеты/fingerprints | ✅ content-addressed asset versions, append-only manifest, dependency fingerprints, separate Preview/Final; local Pillow/FFmpeg end-to-end MP4 smoke-test and unchanged-render cache reuse passed in a temporary project |
+| Studio F3 — журнал/очередь | ✅ append-only hash-chain action journal, consent/cost/fingerprint gates, persistent sequential queue, cancellation/retry/recovery; legacy job-state facade retained |
+| Studio F4 — UI draft/review/apply | 🟡 Browser flow wired to F3 APIs: proposal → explicit consent/cost ceiling → persistent job status → candidate diff → apply/reject; UI render-state tests, JS syntax, and backend tests pass; manual browser click-through remains to be run on a disposable project |
 | M4 — расширенная доводка | ⏳ следующий этап |
 
-Проверки фабрики: `python -m unittest discover -s tests -v` — **32/32**; compilation, `node --check factory/web/app.js`, `git diff --check` проходят. F1 тесты покрывают миграцию без автоизменений, snapshots/restore, отдельный draft/commit и stale writes. F2 тесты покрывают mutation→stale матрицу (текст, voice model/version/prompt/params, codec), SHA-256 integrity, immutable upload/generated-file registration, append-only manifest и read-only fingerprints API. Статус реального MP4 renderer после F2 на локальном Pillow/MoviePy окружении не проверялся; renderer script не изменён.
+Проверки фабрики: `python -m unittest discover -s tests -v` — **45/45**; compilation, `node --check factory/web/app.js`, `git diff --check` проходят. F1 тесты покрывают миграцию без автоизменений, snapshots/restore, отдельный draft/commit и stale writes. F2 тесты покрывают mutation→stale матрицу (текст, voice model/version/prompt/params, codec), SHA-256 integrity, immutable upload/generated-file registration, append-only manifest и read-only fingerprints API. Локальный end-to-end MP4 smoke-test выполнен на временном проекте с Pillow/FFmpeg; повторная сборка на неизменённых входах переиспользовала render cache. Renderer script не изменён.
 
 ## Сдано 27.10.2026 (оригинал)
 - release/final.mp4, release/final_nosubs.mp4, ru.srt, script/scenario.md+.docx, factcheck.md, storyboard.pdf, credits.md, README
