@@ -93,4 +93,13 @@ assert.match(html, /Проверить/);
 assert.match(html, /Тёплая мастерская &lt;уютно&gt;/);
 assert.match(html, /генераторы изображений пока не вызываются/);
 
-console.log('F4/F5 UI render-state tests passed.');
+vm.runInContext(`project = { id: 'subtitle-project', spec: { intent: { theme: 'Субтитры' }, heroes: [], script: { scenes: [] } } }; currentStep = 2; artifacts = { voice: 'ready', timing: { lines: [{ id: 'l1', text: 'Тестовая реплика', dur: 2.5 }] }, duration_s: 3 };`, context);
+html = vm.runInContext('renderVoice()', context);
+assert.match(html, /href="\/media\/subtitle-project\/subtitles\.srt"/);
+assert.match(html, /Скачать субтитры \(\.srt\)/);
+
+const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'factory', 'web', 'index.html'), 'utf8');
+assert.match(indexHtml, /id="projectList"/);
+assert.doesNotMatch(indexHtml, /id="textProvider"|id="gigachatFields"/);
+
+console.log('F4/F5/M4 UI render-state tests passed.');

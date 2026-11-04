@@ -37,3 +37,13 @@
 .variant-actions button{padding:7px 9px;font-size:10px}
 .variant-body{min-width:0}
 @media(max-width:720px){.variant-card{grid-template-columns:76px minmax(0,1fr)}.variant-card>img{width:76px;height:65px}}
+
+/* M4: persistent project switcher in the local sidebar */
+.project-library{margin-top:24px;min-height:0}
+.project-library .side-label{padding:0 8px 9px}
+.project-list{max-height:30vh;overflow:auto;display:grid;gap:4px}
+.project-link{width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;padding:9px 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:#6f7c91;font:500 11px 'DM Sans',sans-serif;cursor:pointer}
+.project-link:hover{background:#f7f8fc;border-color:#e8ebf1}
+.project-link.active{background:#eff2ff;border-color:#dce3ff;color:#365ad2;font-weight:700}
+.project-empty{margin:0;padding:3px 8px;color:#a1aabc;font-size:10px}
+@media(max-width:900px){.project-library{margin-top:16px}.project-list{max-height:20vh}}

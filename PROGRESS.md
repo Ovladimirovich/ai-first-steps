@@ -27,8 +27,9 @@
 | M0 — каркас | ✅ `python -m factory`, русскоязычные 5 шагов, локальное хранение в `.factory/` |
 | M1 — сквозной прогон | ✅ демо-сценарий → немые аудиозаглушки → кадры → настоящий MP4 в плеере; перед каждым этапом смета и подтверждение |
 | Кэш | ✅ повторно используются неизменённые MP3 реплик, кадры и MP4-сегменты сцен; смета показывает число изменившихся сцен |
-| M2 — настоящие текст и голос | 🟡 адаптеры llama.cpp (`127.0.0.1:8081`) и GigaChat добавлены; реальный запуск нужно проверить локально, TTS пока демо |
-| M3 — картинки на сцену и частичная пересборка MP4 | 🟡 загрузка своего фона на сцену и сборка только изменившихся сегментов готовы; генерация картинок сервисом — следующий шаг |
+| M2 — настоящие текст и голос | 🟡 адаптеры llama.cpp (`127.0.0.1:8081`, JSON-режим, ID модели автоматически заполняется при проверке) и GigaChat добавлены; локальный Windows-повтор после этих улучшений ещё не подтверждён, TTS пока демо |
+| M3 — картинки на сцену и частичная пересборка MP4 | 🟡 загрузка своего фона на сцену, история вариантов и сборка только изменившихся сегментов готовы; платный/локальный генератор картинок не подключён |
+| M4 — доводка | 🟡 список проектов в боковой панели, явный переключатель проекта, скачивание SRT, устранены конфликтующие старые настройки в шапке; дальше — ручная Windows-проверка и полировка по результатам |
 | Studio F1 — схема/ревизии/миграция | ✅ v2 spec + production, v1 adapter, явный dry-run/apply, snapshots/restore, persisted drafts API; legacy migration remains explicit |
 | Studio F2 — ассеты/fingerprints | ✅ content-addressed asset versions, append-only manifest, dependency fingerprints, separate Preview/Final; local Pillow/FFmpeg end-to-end MP4 smoke-test and unchanged-render cache reuse passed in a temporary project |
 | Studio F3 — журнал/очередь | ✅ append-only hash-chain action journal, consent/cost/fingerprint gates, persistent sequential queue, cancellation/retry/recovery; generator inputs are deep-copied to preserve candidate base; apply uses story-hash guard, recovers safe legacy candidates, and ignores UI-only revision bumps; Windows job reads retry transient sharing locks; legacy job-state facade retained |
@@ -36,7 +37,7 @@
 | Studio F5 — visual prompts/variant history | 🟡 Backend and UI implemented: versioned prompts/references, immutable image candidates, review/select/reject/deselect history and stale marking; no image provider is called; 6 backend tests plus UI-state coverage pass; manual browser click-through remains |
 | M4 — расширенная доводка | ⏳ следующий этап |
 
-Проверки фабрики: `python -m unittest discover -s tests -v` — **55/55**; compilation, `node --check factory/web/app.js`, `git diff --check` проходят. F1 тесты покрывают миграцию без автоизменений, snapshots/restore, отдельный draft/commit и stale writes. F2 тесты покрывают mutation→stale матрицу (текст, voice model/version/prompt/params, codec), SHA-256 integrity, immutable upload/generated-file registration, append-only manifest и read-only fingerprints API. Локальный end-to-end MP4 smoke-test выполнен на временном проекте с Pillow/FFmpeg; повторная сборка на неизменённых входах переиспользовала render cache. Renderer script не изменён.
+Проверки фабрики: `python -m unittest discover -s tests -v` — **57/57**; UI render-state tests cover F4/F5/M4 and subtitle download, compilation, `node --check factory/web/app.js`, `git diff --check` проходят. F1 тесты покрывают миграцию без автоизменений, snapshots/restore, отдельный draft/commit и stale writes. F2 тесты покрывают mutation→stale матрицу (текст, voice model/version/prompt/params, codec), SHA-256 integrity, immutable upload/generated-file registration, append-only manifest и read-only fingerprints API. Локальный end-to-end MP4 smoke-test выполнен на временном проекте с Pillow/FFmpeg; повторная сборка на неизменённых входах переиспользовала render cache. Renderer script не изменён.
 
 ## Сдано 27.10.2026 (оригинал)
 - release/final.mp4, release/final_nosubs.mp4, ru.srt, script/scenario.md+.docx, factcheck.md, storyboard.pdf, credits.md, README

@@ -249,6 +249,27 @@ def _model_from_list(result: dict, fallback: str) -> str:
     return fallback
 
 
+def _llama_completion(base: str, payload: dict) -> dict:
+    try:
+        return _request_json(base + "/chat/completions", payload, timeout=240)
+    except ProviderError as exc:
+        # Older llama.cpp builds may not implement OpenAI's response_format option.
+        message = str(exc).casefold()
+        if "response_format" not in message:
+            raise
+        compatible_payload = {**payload, "messages": list(payload["messages"])}
+        compatible_payload.pop("response_format", None)
+        return _request_json(base + "/chat/completions", compatible_payload, timeout=240)
+
+
+def _llama_content(response: dict) -> str:
+    try:
+        content = response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ProviderError("Помощник не вернул текст сценария") from exc
+    return content if isinstance(content, str) else str(content)
+
+
 def draft_with_llama(spec: dict, settings: dict) -> dict:
     base = _base_url(settings.get("llama_cpp_base_url", "http://127.0.0.1:8081/v1"))
     model = str(settings.get("llama_cpp_model", "")).strip()
@@ -258,17 +279,27 @@ def draft_with_llama(spec: dict, settings: dict) -> dict:
         except ProviderError:
             model = "local"
     prompt, _, _ = _scenario_prompt(spec)
+    system = "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."
     payload = {"model": model, "messages": [
-        {"role": "system", "content": "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ], "temperature": 0.55, "max_tokens": 3200,
         "response_format": {"type": "json_object"}}
-    response = _request_json(base + "/chat/completions", payload, timeout=240)
+    content = _llama_content(_llama_completion(base, payload))
     try:
-        content = response["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ProviderError("Помощник не вернул текст сценария") from exc
-    data = _json_object(content if isinstance(content, str) else str(content))
+        data = _json_object(content)
+    except ProviderError:
+        # One private, local repair pass follows the approved plan for malformed model JSON.
+        repair = {**payload, "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": content[:16000]},
+            {"role": "user", "content": "Исправь предыдущий ответ. Верни только один корректный JSON-объект по указанной форме; сохрани смысл сценария и не добавляй Markdown."},
+        ], "temperature": 0.1}
+        try:
+            data = _json_object(_llama_content(_llama_completion(base, repair)))
+        except ProviderError as exc:
+            raise ProviderError("Локальная модель дважды вернула сценарий в некорректном формате. Попробуйте ещё раз или выберите демо-шаблон.") from exc
     return _normalize_scenario(spec, data, "llama_cpp", model)
 
 

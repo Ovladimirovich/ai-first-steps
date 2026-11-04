@@ -54,6 +54,37 @@ class FactoryTimingTests(unittest.TestCase):
         self.assertEqual(len(result["script"]["scenes"]), 3)
         self.assertEqual(result["script"]["scenes"][0]["lines"][0]["id"], "l1")
 
+    def test_llama_cpp_malformed_json_gets_one_local_repair_attempt(self):
+        spec = new_spec("Почему небо голубое?", duration=30)
+        valid = {"scenes": [
+            {"title": "Вопрос", "purpose": "hook", "lines": [{"hero": "h2", "text": "Почему небо голубое?"}]},
+            {"title": "Свет", "purpose": "point", "lines": [{"hero": "h1", "text": "Свет состоит из цветов."}]},
+            {"title": "Вывод", "purpose": "payoff", "lines": [{"hero": "h2", "text": "Теперь я знаю ответ."}]},
+        ]}
+        responses = [
+            {"choices": [{"message": {"content": '{"scenes": [не JSON'}}]},
+            {"choices": [{"message": {"content": json.dumps(valid, ensure_ascii=False)}}]},
+        ]
+        with patch("factory.providers._request_json", side_effect=responses) as request:
+            result = draft_with_llama(spec, {"llama_cpp_base_url": "http://127.0.0.1:8081/v1", "llama_cpp_model": "Qwen-local"})
+        self.assertEqual(len(result["script"]["scenes"]), 3)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn('{"scenes": [не JSON', request.call_args_list[1].args[1]["messages"][2]["content"])
+
+    def test_llama_cpp_falls_back_when_server_rejects_json_mode(self):
+        spec = new_spec("Почему небо голубое?", duration=30)
+        scenes = [{"title": title, "purpose": purpose, "lines": [{"hero": hero, "text": text}]}
+                  for title, purpose, hero, text in [
+                      ("Вопрос", "hook", "h2", "Откуда берётся небо?"),
+                      ("Свет", "point", "h1", "Свет состоит из цветов."),
+                      ("Вывод", "payoff", "h2", "Теперь я знаю ответ.")]]
+        response = {"choices": [{"message": {"content": json.dumps({"scenes": scenes}, ensure_ascii=False)}}]}
+        with patch("factory.providers._request_json", side_effect=[ProviderError("400: unsupported response_format"), response]) as request:
+            result = draft_with_llama(spec, {"llama_cpp_base_url": "http://127.0.0.1:8081/v1", "llama_cpp_model": "Qwen-local"})
+        self.assertEqual(len(result["script"]["scenes"]), 3)
+        self.assertIn("response_format", request.call_args_list[0].args[1])
+        self.assertNotIn("response_format", request.call_args_list[1].args[1])
+
     def test_gigachat_adapter_uses_chat_api_response(self):
         spec = new_spec("Почему появляется радуга?", duration=30)
         scenes = [{"title": title, "purpose": purpose, "lines": [{"hero": hero, "text": text}]}
