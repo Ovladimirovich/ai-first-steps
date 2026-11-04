@@ -168,6 +168,24 @@ class ActionLifecycleTests(_TempProjects):
         self.assertEqual(json.loads((root / "project.json").read_text()), metadata)
         self.assertFalse((root / "studio" / "actions.jsonl").exists())
 
+    def test_apply_rejects_candidate_after_story_change(self):
+        from factory import action_service
+        project = create_project({"theme": "Stable until review", "duration": 30})
+        candidate = draft_script(project["spec"])
+        with patch.object(action_service, "draft_script", return_value=candidate):
+            proposal = propose_script_draft(project["id"])
+            job = confirm_action(project["id"], proposal["action_id"], {
+                "input_fingerprint": proposal["input_fingerprint"], "consent": True,
+                "privacy_scope": "local", "cost_ceiling": {"amount": 0, "currency": "RUB"}})
+            self.assertEqual(self.wait_job(project["id"], job["id"])["state"], "completed")
+        changed = load_project(project["id"])
+        changed["spec"]["intent"]["theme"] = "Edited during review"
+        changed["revision"] += 1
+        save_project(changed)
+        with self.assertRaisesRegex(ValueError, "Сценарий изменился"):
+            apply_action(project["id"], proposal["action_id"], {
+                "input_fingerprint": proposal["input_fingerprint"]})
+
     def test_stale_proposal_fingerprint_is_rejected(self):
         project = create_project({"theme": "Before"})
         proposal = propose_script_draft(project["id"])
@@ -346,6 +364,11 @@ class ActionApiTests(_TempProjects):
                                           "POST", {"input_fingerprint": proposal["input_fingerprint"]})
             self.assertEqual(status, 400)
             self.assertIn("подтверждение", denied["error"].lower())
+            current = self.request(f"/api/projects/{self.project['id']}")[1]
+            status, metadata_before_confirm = self.request(f"/api/projects/{self.project['id']}", "PATCH", {
+                "revision": current["revision"], "spec": current["spec"], "current_step": 1})
+            self.assertEqual(status, 200)
+            self.assertGreater(metadata_before_confirm["revision"], current["revision"])
             status, job = self.request(f"/api/projects/{self.project['id']}/actions/{proposal['action_id']}/confirm",
                                        "POST", {"input_fingerprint": proposal["input_fingerprint"],
                                                 "consent": True, "privacy_scope": "local",
@@ -362,6 +385,11 @@ class ActionApiTests(_TempProjects):
                 time.sleep(0.02)
             self.assertEqual(action.get("status"), "candidate_ready")
             self.assertEqual(self.wait_job(self.project["id"], job["id"])["state"], "completed")
+            current = self.request(f"/api/projects/{self.project['id']}")[1]
+            status, metadata_save = self.request(f"/api/projects/{self.project['id']}", "PATCH", {
+                "revision": current["revision"], "spec": current["spec"], "current_step": 2})
+            self.assertEqual(status, 200)
+            self.assertGreater(metadata_save["revision"], current["revision"])
             status, job_detail = self.request(f"/api/projects/{self.project['id']}/jobs/{job['id']}")
             self.assertEqual(status, 200)
             self.assertEqual(job_detail["state"], "completed")
@@ -370,7 +398,7 @@ class ActionApiTests(_TempProjects):
             status, applied = self.request(f"/api/projects/{self.project['id']}/actions/{proposal['action_id']}/apply",
                                            "POST", {"input_fingerprint": proposal["input_fingerprint"]})
             self.assertEqual(status, 200)
-            self.assertEqual(applied["project"]["revision"], self.project["revision"] + 1)
+            self.assertEqual(applied["project"]["revision"], metadata_save["revision"] + 1)
             journal = self.request(f"/api/projects/{self.project['id']}/actions")[1]
             self.assertTrue(journal["valid"])
             self.assertEqual(journal["actions"][0]["status"], "applied")

@@ -29,12 +29,14 @@ def _provider_settings() -> tuple[dict, str, str]:
     model = model or ("local-auto" if provider == "llama_cpp" else "GigaChat-auto" if provider == "gigachat" else "rule-v1")
     return settings, provider, model
 
-def _fingerprint(project: dict, provider: str, model: str, settings: dict | None = None) -> str:
+def _fingerprint(project: dict, provider: str, model: str, settings: dict | None = None,
+                 *, project_revision: int | None = None) -> str:
     settings = settings or {}
     provider_config = ({"local_endpoint": settings.get("llama_cpp_base_url", "")}
                        if provider == "llama_cpp" else {"api_profile": "gigachat-chat-completions-v1"}
                        if provider == "gigachat" else {"template": "local-rule-template"})
-    return digest({"spec": project["spec"], "project_revision": project["revision"],
+    revision = int(project["revision"] if project_revision is None else project_revision)
+    return digest({"spec": project["spec"], "project_revision": revision,
                    "provider": provider, "model": model, "provider_config": provider_config,
                    "prompt_version": PROMPT_VERSION, "parameters": GENERATION_PARAMETERS})
 
@@ -83,9 +85,10 @@ def _validate_action_base(project_id: str, action: dict) -> tuple[dict, dict, st
     if int(project.get("schema_version", 1)) < 2:
         raise ValueError("Действие устарело: для него требуется проект v2")
     settings, provider, model = _provider_settings()
-    if int(project["revision"]) != int(action.get("base_project_revision", -1)) or digest(project["spec"]) != action.get("base_spec_hash"):
-        raise ValueError("Проект изменился после предложения; создайте новое действие")
-    current_fingerprint = _fingerprint(project, provider, model, settings)
+    if digest(project["spec"]) != action.get("base_spec_hash"):
+        raise ValueError("Сценарий изменился после предложения; создайте новое действие")
+    current_fingerprint = _fingerprint(project, provider, model, settings,
+                                       project_revision=int(action.get("base_project_revision", -1)))
     if current_fingerprint != action.get("input_fingerprint"):
         raise ValueError("Параметры модели или входной отпечаток изменились; создайте новое действие")
     return project, settings, current_fingerprint
@@ -180,10 +183,11 @@ def execute_script_draft_job(job: dict) -> None:
             ceiling_amount < (0.0000001 if action.get("requires_cloud_consent") else 0) or
             str(ceiling.get("currency", "")).upper() not in ("RUB", "EUR", "USD")):
         raise ValueError("Подтверждение согласия или предел стоимости недействительны")
-    if int(project["revision"]) != int(action.get("base_project_revision", -1)) or digest(project["spec"]) != action.get("base_spec_hash"):
-        raise ValueError("Проект изменился до запуска; результат не будет применён")
+    if digest(project["spec"]) != action.get("base_spec_hash"):
+        raise ValueError("Сценарий изменился до запуска; результат не будет применён")
     settings, provider, model = _provider_settings()
-    if _fingerprint(project, provider, model, settings) != job.get("input_fingerprint"):
+    if _fingerprint(project, provider, model, settings,
+                    project_revision=int(action.get("base_project_revision", -1))) != job.get("input_fingerprint"):
         raise ValueError("Параметры помощника изменились; результат не будет применён")
     path = candidate_path(job["project_id"], job["action_id"])
     # If a crash happened after the candidate was durably written, reuse it rather than
@@ -256,10 +260,9 @@ def apply_action(project_id: str, action_id: str, body: dict) -> dict:
         if int(project.get("schema_version", 1)) < 2:
             raise ValueError("Для применения требуется явная миграция проекта на v2; автоматическая миграция не выполняется")
         if action.get("status") == "applied":
-            if (int(project.get("revision", 0)) == int(action.get("applied_project_revision", -1)) and
-                    digest(project["spec"]) == action.get("candidate_spec_hash")):
+            if digest(project["spec"]) == action.get("candidate_spec_hash"):
                 return {"project": project, "already_applied": True}
-            raise ValueError("Действие уже применено, но проект изменился после этого")
+            raise ValueError("Действие уже применено, но принятый сценарий изменился после этого")
         if action.get("status") not in ("candidate_ready", "apply_pending"):
             raise ValueError("Применить можно только готовое предложение после проверки")
         candidate = get_candidate(project_id, action_id)
@@ -268,14 +271,13 @@ def apply_action(project_id: str, action_id: str, body: dict) -> dict:
         candidate_revision = int(candidate.get("base_project_revision", -1))
         candidate_spec_hash = candidate.get("candidate_spec_hash")
         # Recover the commit point if the project save succeeded but the final journal append did not.
-        if (action.get("status") == "apply_pending" and int(project["revision"]) == candidate_revision + 1 and
-                digest(project["spec"]) == candidate_spec_hash):
+        if action.get("status") == "apply_pending" and digest(project["spec"]) == candidate_spec_hash:
             append_action_event(project_id, "action_applied", actor="user",
                                 data={"action_id": action_id, "revision_id": project.get("current_revision_id"),
                                       "project_revision": project["revision"], "candidate_spec_hash": candidate_spec_hash})
             return {"project": project, "already_applied": True}
-        if (int(project["revision"]) != candidate_revision or digest(project["spec"]) != candidate.get("base_spec_hash")):
-            raise ValueError("Проект изменился после подготовки предложения; оно устарело")
+        if digest(project["spec"]) != candidate.get("base_spec_hash"):
+            raise ValueError("Сценарий изменился после подготовки предложения; оно устарело")
         validate_spec(candidate["spec"])
         if digest(project["spec"]) == candidate_spec_hash:
             append_action_event(project_id, "action_apply_requested", actor="user",
