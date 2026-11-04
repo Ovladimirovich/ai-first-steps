@@ -400,6 +400,7 @@ def main():
     ap.add_argument("--crf", type=int, default=18, help="качество 18=высокое 23=меньше файл")
     ap.add_argument("--preset", default="medium", help="ffmpeg preset ultrafast/medium/slow")
     ap.add_argument("--concurrency", type=int, default=4, help="потоки ffmpeg threads")
+    ap.add_argument("--workers", type=int, default=1, help="параллельных процессов отрисовки кадров (1 = один поток); alias: --concurrency")
     ap.add_argument("--preview", action="store_true", help="быстрый превью 720p crf23 ultrafast")
     ap.add_argument("--no-audio", action="store_true", help="без озвучки (для теста)")
     ap.add_argument("--only", type=int, default=0, help="только первые N реплик (для теста)")
@@ -408,6 +409,10 @@ def main():
     ap.add_argument("--motion", type=int, default=0, choices=[0,1,2,3], help="0 статика 3-5мин, 1 лёгкий зум, 2 средний, 3 full spring 30fps 12-15мин")
     ap.add_argument("--use-workshop-bg", action="store_true", help="использовать мастерскую pixar-style-preview.jpg как фон (картинка, а не облака)")
     args = ap.parse_args()
+
+    # --concurrency alias to --workers for factory compatibility
+    if args.concurrency and not args.workers:
+        args.workers = args.concurrency
 
     global SCENE_TITLES
     if args.scene_titles:
@@ -457,8 +462,9 @@ def main():
     def bg_for_scene(scene_id):
         if scene_bg_dir and scene_bg_dir.is_dir():
             safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
-            for ext in (".jpg", ".jpeg", ".png"):
-                candidate = scene_bg_dir / f"{safe_scene}{ext}"
+            # Поддерживаем оба паттерна: <ID>.jpg и scene_<ID>.jpg
+            for pattern in (f"{safe_scene}.jpg", f"scene_{safe_scene}.jpg", f"{safe_scene}.jpeg", f"scene_{safe_scene}.jpeg", f"{safe_scene}.png", f"scene_{safe_scene}.png"):
+                candidate = scene_bg_dir / pattern
                 if candidate.is_file():
                     return candidate
         return bg_path
