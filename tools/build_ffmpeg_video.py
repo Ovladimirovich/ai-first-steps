@@ -10,7 +10,7 @@ usage:
   python tools/build_ffmpeg_video.py --output preview/test.mp4 --no-audio
   python tools/build_ffmpeg_video.py --only 5                 # первые 5 реплик для теста 20 сек
 """
-import argparse, json, os, sys, textwrap, math
+import argparse, json, os, re, sys, textwrap, math
 from pathlib import Path
 
 # --- пути ---
@@ -247,7 +247,7 @@ def draw_pixar_frame(text, who, scene, s, W=1920, H=1080, bg_img=None, karaoke_f
     draw.rounded_rectangle([px, py, px+int(pw*prog), py+int(6*scale)], radius=3, fill=hex_to_rgb(P["yellow"])+(opacity,))
     return img
 
-def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=False):
+def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=False, bg_strength=0.18):
     """
     Рисует 1920x1080 кадр в стиле PixarCard через Pillow:
     - тёплый фон #FFF6E0 + лёгкий градиент/картинка облаков
@@ -268,7 +268,7 @@ def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=Fals
         try:
             bg = Image.open(bg_path).convert("RGB").resize((W, H), Image.LANCZOS)
             # осветляем и смешиваем
-            bg = Image.blend(img, bg, 0.18)
+            bg = Image.blend(img, bg, max(0.0, min(1.0, float(bg_strength))))
             img = bg
             draw = ImageDraw.Draw(img, "RGBA")
         except: pass
@@ -393,6 +393,10 @@ def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=Fals
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", "-o", default=str(OUT_DEFAULT), help="выходной mp4")
+    ap.add_argument("--timing", default=str(TIMING), help="JSON тайминга (по умолчанию — прежний Pixar)")
+    ap.add_argument("--voice", default=None, help="готовая голосовая дорожка; по умолчанию — прежний Pixar")
+    ap.add_argument("--scene-titles", default=None, help="JSON-словарь заголовков сцен")
+    ap.add_argument("--scene-bg-dir", default=None, help="необязательные JPG/PNG-фоны по ID сцены")
     ap.add_argument("--crf", type=int, default=18, help="качество 18=высокое 23=меньше файл")
     ap.add_argument("--preset", default="medium", help="ffmpeg preset ultrafast/medium/slow")
     ap.add_argument("--concurrency", type=int, default=4, help="потоки ffmpeg threads")
@@ -404,6 +408,10 @@ def main():
     ap.add_argument("--motion", type=int, default=0, choices=[0,1,2,3], help="0 статика 3-5мин, 1 лёгкий зум, 2 средний, 3 full spring 30fps 12-15мин")
     ap.add_argument("--use-workshop-bg", action="store_true", help="использовать мастерскую pixar-style-preview.jpg как фон (картинка, а не облака)")
     args = ap.parse_args()
+
+    global SCENE_TITLES
+    if args.scene_titles:
+        SCENE_TITLES = json.loads(Path(args.scene_titles).read_text(encoding="utf-8"))
 
     if args.preview:
         args.width = 1280
@@ -417,9 +425,10 @@ def main():
     print(f"FFmpeg PIXAR — {W}x{H} crf{args.crf} {args.preset} threads{args.concurrency}")
 
     # загрузка тайминга
-    if not TIMING.exists():
-        print(f"не найден {TIMING}", file=sys.stderr); sys.exit(1)
-    data = json.loads(TIMING.read_text(encoding="utf-8"))
+    timing_path = Path(args.timing).resolve()
+    if not timing_path.exists():
+        print(f"не найден {timing_path}", file=sys.stderr); sys.exit(1)
+    data = json.loads(timing_path.read_text(encoding="utf-8"))
     lines = data["lines"]
     total = float(data["total"])
     fps = int(data.get("fps", 30))
@@ -429,7 +438,7 @@ def main():
         print(f"TEST only {args.only} lines -> total {total:.1f}s")
 
     # аудио
-    voice = VOICE if VOICE.exists() else VOICE_PREVIEW
+    voice = Path(args.voice).resolve() if args.voice else (VOICE if VOICE.exists() else VOICE_PREVIEW)
     if not voice.exists():
         print(f"нет аудио {VOICE}", file=sys.stderr)
         args.no_audio = True
@@ -444,6 +453,16 @@ def main():
         for p in [ASSETS / "classroom_pixar.jpg", ASSETS / "clouds_pixar_bg.jpg", ROOT/"remotion/public/pixar/clouds_pixar_bg.jpg"]:
             if p.exists():
                 bg_path = p; break
+    scene_bg_dir = Path(args.scene_bg_dir).resolve() if args.scene_bg_dir else None
+    def bg_for_scene(scene_id):
+        if scene_bg_dir and scene_bg_dir.is_dir():
+            safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
+            for ext in (".jpg", ".jpeg", ".png"):
+                candidate = scene_bg_dir / f"{safe_scene}{ext}"
+                if candidate.is_file():
+                    return candidate
+        return bg_path
+
     # для motion 3 подготовим базовый фон 1920x1080 один раз
     base_bg_img = None
     if args.motion == 3:
@@ -478,6 +497,36 @@ def main():
                 draw0.line([(0, y), (W, y)], fill=(r,g,b))
         # заголовки на базовом фоне не рисуем — они будут на каждом кадре отдельно? для простоты добавим заголовок в base_bg? нет, заголовок меняется по сцене, поэтому оставим base без заголовка
         print(f"фон для motion3: {bg_path} workshop={args.use_workshop_bg}")
+
+    scene_base_cache = {}
+    def base_bg_for_scene(scene_id):
+        if base_bg_img is None:
+            return None
+        path = bg_for_scene(scene_id)
+        if path == bg_path or not path or not path.exists():
+            return base_bg_img
+        key = str(path)
+        if key in scene_base_cache:
+            return scene_base_cache[key]
+        from PIL import Image, ImageDraw
+        color = hex_to_rgb(P["bg"])
+        image = Image.new("RGB", (W, H), color)
+        try:
+            source = Image.open(path).convert("RGB").resize((W, H), Image.LANCZOS)
+            if args.use_workshop_bg:
+                image = source
+                overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(overlay, "RGBA")
+                for yy in range(int(H * 0.55), H):
+                    alpha = int(90 * (yy - H * 0.55) / (H * 0.45))
+                    draw.line([(0, yy), (W, yy)], fill=(0, 0, 0, alpha))
+                image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+            else:
+                image = Image.blend(image, source, 0.82)
+        except Exception:
+            return base_bg_img
+        scene_base_cache[key] = image
+        return image
 
     # готовим сегменты: реплика + пауза
     segments = []  # list of (type, text, who, scene, dur)
@@ -527,6 +576,7 @@ def main():
         # для каждого сегмента генерим кадры с s = spring(frame_in_seg)
         frame_idx = 0
         for seg_i, (typ, text, who, scene, dur) in enumerate(segments):
+            scene_base_bg = base_bg_for_scene(scene)
             n_frames = int(round(dur * fps))
             if n_frames == 0:
                 continue
@@ -534,11 +584,13 @@ def main():
             if typ == "gap":
                 # один кадр фона с заголовком, дублируем
                 # сгенерим один gap-кадр и скопируем
-                gap_img = draw_pixar_image("", "b", scene, W=W, H=H, bg_path=bg_path, is_gap=True)
+                gap_bg = bg_for_scene(scene)
+                gap_strength = 0.82 if scene_bg_dir and gap_bg != bg_path else 0.18
+                gap_img = draw_pixar_image("", "b", scene, W=W, H=H, bg_path=gap_bg, is_gap=True, bg_strength=gap_strength)
                 # но если workshop — используем base_bg_img + заголовок
-                if args.use_workshop_bg and base_bg_img is not None:
-                    # gap с workshop фоном — просто base + заголовок
-                    gap_img = base_bg_img.copy()
+                if args.use_workshop_bg and scene_base_bg is not None:
+                    # gap с workshop-фоном — просто фон сцены + заголовок
+                    gap_img = scene_base_bg.copy()
                     d = ImageDraw.Draw(gap_img, "RGBA")
                     title = SCENE_TITLES.get(scene, f"Сцена {scene}")
                     font_title = get_font(58, bold=True)
@@ -565,10 +617,10 @@ def main():
                     s = spring_value(f, fps=fps, damping=13, stiffness=140)
                     karaoke_frac = (f + 1) / n_frames
                     # фон: либо base_bg_img (workshop) либо свежий градиент/облака
-                    if args.use_workshop_bg and base_bg_img is not None:
-                        # для workshop — каждый кадр это base_bg + карточка с s + заголовок
+                    if args.use_workshop_bg and scene_base_bg is not None:
+                        # для workshop — каждый кадр это фон сцены + карточка с s + заголовок
                         # заголовок уже на base? нет, рисуем заголовок каждый кадр
-                        frame_img = base_bg_img.copy()
+                        frame_img = scene_base_bg.copy()
                         d = ImageDraw.Draw(frame_img, "RGBA")
                         title = SCENE_TITLES.get(scene, f"Сцена {scene}")
                         font_title = get_font(58, bold=True)
@@ -581,8 +633,8 @@ def main():
                     else:
                         # облака — генерим фон каждый кадр? слишком долго, используем base_bg без заголовка + карточка
                         # но base_bg без заголовка — добавим заголовок
-                        if base_bg_img is not None:
-                            frame_img = base_bg_img.copy()
+                        if scene_base_bg is not None:
+                            frame_img = scene_base_bg.copy()
                             d = ImageDraw.Draw(frame_img, "RGBA")
                             title = SCENE_TITLES.get(scene, f"Сцена {scene}")
                             font_title = get_font(58, bold=True)
@@ -752,7 +804,9 @@ def main():
             img_path = cache[key]
         else:
             is_gap = typ=="gap"
-            img = draw_pixar_image(text, who, scene, W=W, H=H, bg_path=bg_path, is_gap=is_gap)
+            selected_bg = bg_for_scene(scene)
+            strength = 0.82 if scene_bg_dir and selected_bg != bg_path else 0.18
+            img = draw_pixar_image(text, who, scene, W=W, H=H, bg_path=selected_bg, is_gap=is_gap, bg_strength=strength)
             img_path = tmpdir / f"seg_{idx:03d}_{typ}_{scene.replace('.','_')}.png"
             img.save(img_path, "PNG", compress_level=1)
             cache[key] = img_path
