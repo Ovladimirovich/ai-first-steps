@@ -88,6 +88,7 @@ class ActionLifecycleTests(_TempProjects):
             job = confirm_action(project["id"], proposal["action_id"], {
                 "input_fingerprint": proposal["input_fingerprint"], "consent": True,
                 "privacy_scope": "local", "cost_ceiling": {"amount": 0, "currency": "RUB"}})
+            self.assertEqual(job["payload"]["base_spec_hash"], proposal["base_spec_hash"])
             self.assertEqual(self.wait_job(project["id"], job["id"])["state"], "completed")
             generator.assert_called_once()
         unchanged = load_project(project["id"])

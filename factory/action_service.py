@@ -103,6 +103,7 @@ def confirm_action(project_id: str, action_id: str, body: dict) -> dict:
         if action.get("job_id"):
             raise ValueError("Запись уже поставленной задачи отсутствует или повреждена")
         project, settings, current_fingerprint = _validate_action_base(project_id, action)
+        base_spec_hash = digest(project["spec"])
         if body.get("input_fingerprint") != current_fingerprint:
             raise ValueError("Подтверждение не совпадает с текущим отпечатком входных данных")
         now = time.time()
@@ -136,7 +137,7 @@ def confirm_action(project_id: str, action_id: str, body: dict) -> dict:
                         "input_fingerprint": current_fingerprint, "confirmed_at": now,
                         "expires_at": now + 3600}
         return create_job(project_id, action_id=action_id, job_type="script_draft",
-                          payload={"base_project_revision": project["revision"], "base_spec_hash": digest(project["spec"]),
+                          payload={"base_project_revision": project["revision"], "base_spec_hash": base_spec_hash,
                                    "provider": action["provider"], "model": action["model"],
                                    "prompt_version": action["prompt_version"],
                                    "generation_parameters": action["generation_parameters"]},
