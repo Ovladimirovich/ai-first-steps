@@ -12,7 +12,11 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .core import ROOT, artifact_state, create_project, list_projects, load_project, project_dir, save_project, validate_spec
+from .core import (ROOT, artifact_state, create_project, get_project_revision, get_studio_document,
+                   list_projects, load_project, project_dir, project_revisions, restore_project_revision,
+                   save_project, validate_spec)
+from .drafts import commit_project_draft, get_project_draft, save_project_draft
+from .migrations import apply_v1_migration, migration_plan
 from .pipeline import get_job, plan, run
 from .providers import ProviderError, draft_with_gigachat, draft_with_llama, test_connection, test_gigachat_connection
 from .settings import gigachat_credentials, load_settings, save_settings
@@ -88,6 +92,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"projects": list_projects()})
         if path.startswith("/api/projects/"):
             parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[3] == "studio":
+                try:
+                    return self._json(200, get_studio_document(parts[2]))
+                except FileNotFoundError:
+                    return self._error("Ролик не найден", 404)
+                except ValueError as exc:
+                    return self._error(exc, 409)
+            if len(parts) == 5 and parts[3] == "drafts":
+                try:
+                    return self._json(200, get_project_draft(parts[2], parts[4]))
+                except FileNotFoundError:
+                    return self._error("Черновик не найден", 404)
+                except ValueError as exc:
+                    return self._error(exc, 409)
+            if len(parts) == 4 and parts[3] == "revisions":
+                try:
+                    return self._json(200, {"revisions": project_revisions(parts[2])})
+                except FileNotFoundError:
+                    return self._error("Ролик не найден", 404)
+            if len(parts) == 5 and parts[3] == "revisions":
+                try:
+                    return self._json(200, get_project_revision(parts[2], parts[4]))
+                except FileNotFoundError:
+                    return self._error("Ревизия или ролик не найдены", 404)
+                except ValueError as exc:
+                    return self._error(exc, 409)
+            if len(parts) == 5 and parts[3:] == ["migration", "plan"]:
+                try:
+                    return self._json(200, migration_plan(parts[2]))
+                except FileNotFoundError:
+                    return self._error("Ролик не найден", 404)
+                except (ValueError, json.JSONDecodeError) as exc:
+                    return self._error(exc, 409)
             if len(parts) == 4 and parts[3] == "status":
                 project_id = parts[2]
                 try:
@@ -121,6 +158,16 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/projects":
                 project = create_project(body)
                 return self._json(201, project)
+            if len(parts := path.strip("/").split("/")) == 5 and parts[:2] == ["api", "projects"] and parts[3:] == ["migration", "apply"]:
+                result = apply_v1_migration(parts[2], int(body.get("expected_revision", 0)),
+                                            str(body.get("source_fingerprint", "")))
+                return self._json(200, result)
+            if len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "revisions" and parts[5] == "restore":
+                project = restore_project_revision(parts[2], parts[4], int(body.get("expected_revision", -1)))
+                return self._json(200, project)
+            if len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "drafts" and parts[5] == "commit":
+                result = commit_project_draft(parts[2], parts[4], body)
+                return self._json(200, result)
             if path == "/api/settings/test":
                 settings = load_settings()
                 if settings["text_provider"] == "gigachat":
@@ -201,6 +248,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(exc, 409 if "устар" in str(exc).lower() or "изменил" in str(exc).lower() else 400)
         except Exception as exc:
             return self._error(exc, 500)
+
+    def do_PUT(self):
+        path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
+        parts = path.strip("/").split("/")
+        if len(parts) != 5 or parts[:2] != ["api", "projects"] or parts[3] != "drafts":
+            return self.send_error(404)
+        try:
+            draft = save_project_draft(parts[2], parts[4], self._body())
+            return self._json(200, draft)
+        except FileNotFoundError:
+            return self._error("Ролик не найден", 404)
+        except ValueError as exc:
+            return self._error(exc, 409)
 
     def do_PATCH(self):
         path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
