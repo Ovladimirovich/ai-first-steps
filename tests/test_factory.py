@@ -104,7 +104,7 @@ class FactoryTimingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "обновите и проверьте"):
                 plan(project, "render", "draft")
 
-    def test_scene_cache_invalidates_only_edited_scene(self):
+    def test_scene_cache_invalidates_edited_scene_and_only_timing_affected_segments(self):
         from factory.core import project_dir
         with tempfile.TemporaryDirectory() as tmp, patch("factory.core.DATA_ROOT", Path(tmp)):
             spec = draft_script(new_spec("Кэш сцен"))
@@ -113,7 +113,7 @@ class FactoryTimingTests(unittest.TestCase):
             root.mkdir(parents=True)
             entries = {}
             for scene in spec["script"]["scenes"]:
-                key = _segment_key(scene, spec, "draft")
+                key = _segment_key(scene, spec, "draft", project)
                 relative = f"segments/{scene['id']}.mp4"
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -122,7 +122,9 @@ class FactoryTimingTests(unittest.TestCase):
             (root / "segment-cache.json").write_text(json.dumps(entries), encoding="utf-8")
             self.assertEqual(_pending_scene_count(project, "draft"), 0)
             spec["script"]["scenes"][0]["lines"][0]["text"] += " Новая фраза."
-            self.assertEqual(_pending_scene_count(project, "draft"), 1)
+            # The edit changes its own scene and one later scene's rounded caption timing;
+            # the unrelated middle scene remains reusable.
+            self.assertEqual(_pending_scene_count(project, "draft"), 2)
 
     def test_renderer_has_optional_inputs(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools/build_ffmpeg_video.py"), "--help"],

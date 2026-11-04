@@ -15,6 +15,7 @@ from pathlib import Path
 from .core import (ROOT, artifact_state, create_project, get_project_revision, get_studio_document,
                    list_projects, load_project, project_dir, project_revisions, restore_project_revision,
                    save_project, validate_spec)
+from .assets import register_asset_bytes
 from .drafts import commit_project_draft, get_project_draft, save_project_draft
 from .migrations import apply_v1_migration, migration_plan
 from .pipeline import get_job, plan, run
@@ -95,6 +96,17 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "studio":
                 try:
                     return self._json(200, get_studio_document(parts[2]))
+                except FileNotFoundError:
+                    return self._error("Ролик не найден", 404)
+                except ValueError as exc:
+                    return self._error(exc, 409)
+            if len(parts) == 4 and parts[3] == "fingerprints":
+                try:
+                    state = artifact_state(load_project(parts[2]), force_asset_hash=True)
+                    return self._json(200, {"fingerprint_version": state["fingerprint_version"],
+                                            "fingerprints": state["fingerprints"],
+                                            "artifact_details": state["artifact_details"],
+                                            "stale_reasons": state["stale_reasons"]})
                 except FileNotFoundError:
                     return self._error("Ролик не найден", 404)
                 except ValueError as exc:
@@ -196,11 +208,20 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     return self._error(f"Не удалось прочитать картинку: {exc}")
                 safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(scene_id).name)
-                relative = Path("scene-backgrounds") / f"{safe_scene}-{uuid.uuid4().hex[:10]}.jpg"
-                target = project_dir(project["id"]) / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                image.save(target, "JPEG", quality=90, optimize=True)
-                image.save(target.parent / f"{safe_scene}.jpg", "JPEG", quality=90, optimize=True)
+                if int(project.get("schema_version", 1)) >= 2:
+                    encoded_image = io.BytesIO()
+                    image.save(encoded_image, "JPEG", quality=90, optimize=True)
+                    record = register_asset_bytes(project["id"], encoded_image.getvalue(),
+                                                  asset_type="scene_image", target={"scene_id": scene_id},
+                                                  extension=".jpg", mime="image/jpeg")
+                    relative = Path(record["path"])
+                else:
+                    # Keep the legacy upload layout for v1 projects; do not migrate them implicitly.
+                    relative = Path("scene-backgrounds") / f"{safe_scene}-{uuid.uuid4().hex[:10]}.jpg"
+                    target = project_dir(project["id"]) / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    image.save(target, "JPEG", quality=90, optimize=True)
+                    image.save(target.parent / f"{safe_scene}.jpg", "JPEG", quality=90, optimize=True)
                 scene["image"] = {"mode": "upload", "path": relative.as_posix()}
                 project["revision"] += 1
                 project["updated_at"] = time.time()

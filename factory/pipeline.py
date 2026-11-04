@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -11,6 +12,8 @@ import uuid
 from pathlib import Path
 
 from .core import RENDERER_VERSION, ROOT, artifact_state, digest, legacy_who, project_dir, renderer_timing
+from .fingerprints import project_fingerprints, verify_asset_record, verify_project_file
+from .assets import register_asset_file
 
 JOBS: dict[str, dict] = {}
 PLANS: dict[str, dict] = {}
@@ -34,42 +37,136 @@ def _read_cache(path: Path) -> dict:
         return {}
 
 
-def _voice_key(line: dict, hero: dict) -> str:
+def _atomic_copy(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}-{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copyfile(source, temporary)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _safe_cached_file(root: Path, relative: str | None) -> Path | None:
+    if not relative:
+        return None
+    candidate = (root / str(relative)).resolve()
+    return candidate if root.resolve() in candidate.parents else None
+
+
+def _asset_records(root: Path) -> dict[str, dict]:
+    manifest = _read_cache(root / "studio" / "assets.json")
+    return {str(item.get("asset_id")): item for item in manifest.get("assets", [])
+            if isinstance(item, dict) and item.get("asset_id")}
+
+
+def _cached_output_is_valid(root: Path, entry, fallback: Path, asset_records: dict[str, dict]) -> bool:
+    if isinstance(entry, dict) and entry.get("file"):
+        path = _safe_cached_file(root, entry["file"])
+    else:
+        path = fallback
+    if not path or not path.is_file():
+        return False
+    if isinstance(entry, dict) and entry.get("asset_id"):
+        record = asset_records.get(str(entry["asset_id"]))
+        if not record:
+            return False
+        verified = verify_asset_record(record, root)
+        return bool(verified.get("available") and verified.get("integrity_ok"))
+    return True
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _cache_fingerprint(value) -> str | None:
+    if isinstance(value, str):
+        return value
+    return str(value.get("fingerprint") or value.get("key")) if isinstance(value, dict) and (value.get("fingerprint") or value.get("key")) else None
+
+
+def _voice_mix_fingerprint(fingerprints: dict) -> str:
+    return digest({"fingerprint_version": fingerprints["fingerprint_version"],
+                   "timing": fingerprints["components"]["timing"],
+                   "lines": {key: item["fingerprint"] for key, item in fingerprints["voice_lines"].items()}})
+
+
+def _voice_key(line: dict, hero: dict, project: dict | None = None) -> str:
+    if project is not None:
+        return project_fingerprints(project)["voice_lines"][str(line["id"])]["fingerprint"]
     return digest({"text": line["text"], "voice": hero.get("voice"), "provider": "demo-silence-v1"})
 
 
-def _frame_key(scene: dict, spec: dict) -> str:
+def _frame_key(scene: dict, spec: dict, project: dict | None = None) -> str:
+    if project is not None:
+        return project_fingerprints(project)["frames"][str(scene["id"])]["fingerprint"]
     return digest({"scene": scene, "look": spec.get("look"), "renderer": RENDERER_VERSION})
+
+
+def _segment_entry(scene: dict, spec: dict, kind: str, project: dict | None = None,
+                   fingerprints: dict | None = None) -> dict:
+    if project is not None:
+        data = fingerprints or project_fingerprints(project)
+        return data["segments"][str(scene["id"])][kind]
+    dependencies = {"scene": digest(scene), "look": digest(spec.get("look")),
+                    "format": digest(spec.get("format")), "renderer": RENDERER_VERSION,
+                    "quality": kind}
+    key = digest(dependencies)
+    return {"fingerprint": key, "dependencies": dependencies}
+
+
+def _segment_key(scene: dict, spec: dict, kind: str, project: dict | None = None,
+                 fingerprints: dict | None = None) -> str:
+    return _segment_entry(scene, spec, kind, project, fingerprints)["fingerprint"]
 
 
 def _pending_voice_count(project: dict) -> int:
     root = project_dir(project["id"])
     cache = _read_cache(root / "voice-cache.json")
-    heroes = {hero["id"]: hero for hero in project["spec"].get("heroes", [])}
+    data = project_fingerprints(project)
+    asset_records = _asset_records(root)
     lines = [line for scene in project["spec"]["script"]["scenes"] for line in scene.get("lines", [])]
-    return sum(1 for line in lines if not (cache.get(line["id"]) == _voice_key(line, heroes[line["hero"]])
-                                             and (root / "audio" / f"{line['id']}.mp3").is_file()))
+    def current(line):
+        entry = cache.get(line["id"])
+        return (_cache_fingerprint(entry) == data["voice_lines"][str(line["id"])]["fingerprint"]
+                and _cached_output_is_valid(root, entry, root / "audio" / f"{line['id']}.mp3", asset_records))
+    return sum(1 for line in lines if not current(line))
 
 
 def _pending_frame_count(project: dict) -> int:
     root = project_dir(project["id"])
     cache = _read_cache(root / "frames-cache.json")
     scenes = project["spec"]["script"]["scenes"]
-    return sum(1 for scene in scenes if not (cache.get(scene["id"]) == _frame_key(scene, project["spec"])
-                                               and (root / "frames" / f"{scene['id']}.jpg").is_file()))
+    data = project_fingerprints(project)
+    asset_records = _asset_records(root)
+    def current(scene):
+        entry = cache.get(scene["id"])
+        return (_cache_fingerprint(entry) == data["frames"][str(scene["id"])]["fingerprint"]
+                and _cached_output_is_valid(root, entry, root / "frames" / f"{scene['id']}.jpg", asset_records))
+    return sum(1 for scene in scenes if not current(scene))
 
 
 def _pending_scene_count(project: dict, kind: str) -> int:
     root = project_dir(project["id"])
     cache = _segment_cache(project)
+    data = project_fingerprints(project)
     pending = 0
     for scene in project["spec"].get("script", {}).get("scenes", []):
         if not scene.get("lines"):
             continue
-        key = _segment_key(scene, project["spec"], kind)
+        key = _segment_key(scene, project["spec"], kind, project, data)
         entry = cache.get(f"{scene['id']}:{key}", {})
-        cached_file = root / entry.get("file", "") if entry.get("file") else None
-        if not cached_file or not cached_file.is_file():
+        cached_file = _safe_cached_file(root, entry.get("file")) if isinstance(entry, dict) else None
+        valid_file = bool(cached_file and cached_file.is_file())
+        if valid_file and int(project.get("schema_version", 1)) >= 2:
+            expected_sha = entry.get("content_sha256") if isinstance(entry, dict) else None
+            valid_file = bool(expected_sha and verify_project_file(root, str(entry["file"]), expected_sha).get("integrity_ok"))
+        if not valid_file:
             pending += 1
     return pending
 
@@ -81,10 +178,11 @@ def plan(project: dict, stage: str, kind: str | None = None) -> dict:
     if not spec.get("script", {}).get("scenes"):
         raise ValueError("Сначала подготовьте сценарий")
     if stage == "voice":
-        total_units = artifacts["voice_units"]
-        units = _pending_voice_count(project)
+        line_units = artifacts["voice_units"]
+        total_units = line_units + 1  # per-line assets plus the assembled dialogue mix
+        units = _pending_voice_count(project) + int(artifacts["voice"] != "ready")
         estimate = 1 if units == 0 else max(1, int(units * 0.25 + 1))
-        message = f"Обновятся {units} из {total_units} тихих демо-дорожек · примерно {estimate} сек. Стоимость: 0 ₽."
+        message = f"Обновятся {units} из {total_units} демо-дорожек/сведений · примерно {estimate} сек. Стоимость: 0 ₽."
     elif stage == "frames":
         total_units = artifacts["scene_units"]
         units = _pending_frame_count(project)
@@ -174,26 +272,68 @@ def _make_voice(project: dict, job: dict) -> None:
     except (OSError, ValueError):
         line_cache = {}
     line_specs = {line["id"]: line for scene in project["spec"]["script"]["scenes"] for line in scene["lines"]}
-    hero_specs = {hero["id"]: hero for hero in project["spec"]["heroes"]}
+    fingerprint_data = project_fingerprints(project)
+    native_v2 = int(project.get("schema_version", 1)) >= 2
+    asset_records = _asset_records(root)
     for index, row in enumerate(data["lines"], 1):
         output = audio_dir / f"{row['id']}.mp3"
         line = line_specs[row["id"]]
-        key = _voice_key(line, hero_specs[line["hero"]])
+        entry = fingerprint_data["voice_lines"][str(row["id"])]
+        key = entry["fingerprint"]
         duration = max(0.5, float(row["dur"]))
-        reused = output.exists() and line_cache.get(row["id"]) == key
+        old_entry = line_cache.get(row["id"])
+        immutable_file = _safe_cached_file(root, old_entry.get("file")) if isinstance(old_entry, dict) and old_entry.get("file") else None
+        reused = _cache_fingerprint(old_entry) == key and _cached_output_is_valid(root, old_entry, output, asset_records)
+        if reused and immutable_file and not output.is_file():
+            _atomic_copy(immutable_file, output)
         if not reused:
+            generated = audio_dir / (f".{row['id']}-{uuid.uuid4().hex}.mp3" if native_v2 else f"{row['id']}.mp3")
             subprocess.run([ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=44100",
-                            "-t", f"{duration:.3f}", "-q:a", "9", "-acodec", "libmp3lame", str(output)],
+                            "-t", f"{duration:.3f}", "-q:a", "9", "-acodec", "libmp3lame", str(generated)],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            line_cache[row["id"]] = key
+            if native_v2:
+                record = register_asset_file(project["id"], generated, asset_type="dialogue_audio",
+                                             target={"line_id": str(row["id"])}, extension=".mp3",
+                                             mime="audio/mpeg", input_fingerprint=key)
+                immutable_file = root / record["path"]
+                _atomic_copy(immutable_file, output)
+                generated.unlink(missing_ok=True)
+                line_cache[row["id"]] = {"fingerprint": key, "dependencies": entry["dependencies"],
+                                          "asset_id": record["asset_id"], "asset_version": record["asset_version"],
+                                          "file": record["path"]}
+            else:
+                line_cache[row["id"]] = {"fingerprint": key, "dependencies": entry["dependencies"]}
         action = "использую прежнюю" if reused else "создана"
         _append(job, f"Дорожка {index}/{len(data['lines'])}: {action}", int(index / max(1, len(data["lines"])) * 65))
     cache_path.write_text(json.dumps(line_cache, ensure_ascii=False, indent=2), encoding="utf-8")
     track = audio_dir / "voice_track.mp3"
-    total = max(0.5, float(data["total"]))
-    subprocess.run([ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-                    "-t", f"{total:.3f}", "-q:a", "9", "-acodec", "libmp3lame", str(track)],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    mix_fingerprint = _voice_mix_fingerprint(fingerprint_data)
+    mix_record = None
+    if native_v2:
+        previous_meta = _read_cache(root / "voice.meta.json")
+        asset_manifest = _read_cache(root / "studio" / "assets.json")
+        records = {str(item.get("asset_id")): item for item in asset_manifest.get("assets", [])
+                   if isinstance(item, dict) and item.get("asset_id")}
+        candidate = records.get(str(previous_meta.get("asset_id", "")))
+        if previous_meta.get("hash") == mix_fingerprint and candidate and candidate.get("input_fingerprint") == mix_fingerprint:
+            integrity = verify_asset_record(candidate, root)
+            if integrity.get("available") and integrity.get("integrity_ok"):
+                mix_record = candidate
+                alias = verify_project_file(root, "audio/voice_track.mp3", candidate.get("sha256"))
+                if not alias.get("integrity_ok"):
+                    _atomic_copy(root / candidate["path"], track)
+    if mix_record is None:
+        generated_track = audio_dir / f".voice-track-{uuid.uuid4().hex}.mp3" if native_v2 else track
+        total = max(0.5, float(data["total"]))
+        subprocess.run([ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                        "-t", f"{total:.3f}", "-q:a", "9", "-acodec", "libmp3lame", str(generated_track)],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if native_v2:
+            mix_record = register_asset_file(project["id"], generated_track, asset_type="dialogue_mix",
+                                             target={"mix": "voice_track"}, extension=".mp3",
+                                             mime="audio/mpeg", input_fingerprint=mix_fingerprint)
+            _atomic_copy(root / mix_record["path"], track)
+            generated_track.unlink(missing_ok=True)
     (root / "timing.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     # A lightweight SRT matching the same timeline.
     def stamp(seconds):
@@ -201,7 +341,16 @@ def _make_voice(project: dict, job: dict) -> None:
         return f"{h:02}:{m:02}:{s:02},{ms:03}"
     srt = "\n\n".join(f"{i}\n{stamp(x['start'])} --> {stamp(x['end'])}\n{x['text']}" for i, x in enumerate(data["lines"], 1))
     (root / "subtitles.srt").write_text(srt + "\n", encoding="utf-8")
-    (root / "voice.meta.json").write_text(json.dumps({"hash": artifact_state(project)["voice_hash"], "demo": True}, ensure_ascii=False), encoding="utf-8")
+    voice_state = artifact_state(project)
+    voice_meta = {"hash": voice_state["voice_hash"],
+                  "fingerprint_version": voice_state["fingerprint_version"],
+                  "dependencies": {"timing": fingerprint_data["components"]["timing"],
+                                   "line_fingerprints": {key: value["fingerprint"] for key, value in fingerprint_data["voice_lines"].items()}},
+                  "demo": True}
+    if mix_record:
+        voice_meta.update({"asset_id": mix_record["asset_id"], "asset_version": mix_record["asset_version"],
+                           "path": mix_record["path"], "sha256": mix_record["sha256"]})
+    (root / "voice.meta.json").write_text(json.dumps(voice_meta, ensure_ascii=False), encoding="utf-8")
     _append(job, "Демо-озвучка готова. Это тишина с длительностью по тексту, не настоящий голос.", 95)
 
 
@@ -225,10 +374,18 @@ def _make_frames(project: dict, job: dict) -> None:
         frame_cache = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         frame_cache = {}
+    fingerprint_data = project_fingerprints(project)
+    native_v2 = int(project.get("schema_version", 1)) >= 2
+    asset_records = _asset_records(root)
     for index, scene in enumerate(scenes, 1):
         frame_path = frame_dir / f"{scene['id']}.jpg"
-        key = _frame_key(scene, spec)
-        reused = frame_path.exists() and frame_cache.get(scene["id"]) == key
+        entry = fingerprint_data["frames"][str(scene["id"])]
+        key = entry["fingerprint"]
+        old_entry = frame_cache.get(scene["id"])
+        immutable_file = _safe_cached_file(root, old_entry.get("file")) if isinstance(old_entry, dict) and old_entry.get("file") else None
+        reused = _cache_fingerprint(old_entry) == key and _cached_output_is_valid(root, old_entry, frame_path, asset_records)
+        if reused and immutable_file and not frame_path.is_file():
+            _atomic_copy(immutable_file, frame_path)
         if not reused:
             first = (scene.get("lines") or [{}])[0]
             text = first.get("text", "")
@@ -241,18 +398,27 @@ def _make_frames(project: dict, job: dict) -> None:
                     bg_path = candidate
             # Existing renderer's exact drawing function; a static representative frame.
             image = module.draw_pixar_image(text, hero, scene["id"], W=1920, H=1080, bg_path=bg_path, is_gap=False, bg_strength=0.82 if bg_path else 0.18)
-            image.save(frame_path, "JPEG", quality=91)
-            frame_cache[scene["id"]] = key
+            generated = frame_dir / (f".{scene['id']}-{uuid.uuid4().hex}.jpg" if native_v2 else f"{scene['id']}.jpg")
+            image.save(generated, "JPEG", quality=91)
+            if native_v2:
+                record = register_asset_file(project["id"], generated, asset_type="scene_frame",
+                                             target={"scene_id": str(scene["id"])}, extension=".jpg",
+                                             mime="image/jpeg", input_fingerprint=key)
+                immutable_file = root / record["path"]
+                _atomic_copy(immutable_file, frame_path)
+                generated.unlink(missing_ok=True)
+                frame_cache[scene["id"]] = {"fingerprint": key, "dependencies": entry["dependencies"],
+                                             "asset_id": record["asset_id"], "asset_version": record["asset_version"],
+                                             "file": record["path"]}
+            else:
+                frame_cache[scene["id"]] = {"fingerprint": key, "dependencies": entry["dependencies"]}
         action = "взял из кэша" if reused else "перерисовал"
         _append(job, f"Кадр «{scene['title']}» ({index}/{len(scenes)}): {action}", int(index / len(scenes) * 90))
     cache_path.write_text(json.dumps(frame_cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    state = artifact_state(project)
     (root / "frames.meta.json").write_text(
-        json.dumps({"hash": artifact_state(project)["frame_hash"], "demo": True}, ensure_ascii=False), encoding="utf-8")
-
-
-def _segment_key(scene: dict, spec: dict, kind: str) -> str:
-    return digest({"scene": scene, "look": spec.get("look"), "format": spec.get("format"),
-                   "renderer": RENDERER_VERSION, "quality": kind})
+        json.dumps({"hash": state["frame_hash"], "fingerprint_version": state["fingerprint_version"],
+                    "demo": True}, ensure_ascii=False), encoding="utf-8")
 
 
 def _segment_cache(project: dict) -> dict:
@@ -268,9 +434,15 @@ def _make_render(project: dict, job: dict, kind: str) -> None:
     root = project_dir(project["id"])
     out_dir = root / "renders"
     out_dir.mkdir(parents=True, exist_ok=True)
-    output = out_dir / ("draft.mp4" if kind == "draft" else "final.mp4")
+    compatibility_output = out_dir / ("draft.mp4" if kind == "draft" else "final.mp4")
+    native_v2 = int(project.get("schema_version", 1)) >= 2
+    output = out_dir / f".{kind}-{uuid.uuid4().hex}.partial.mp4" if native_v2 else compatibility_output
     spec = project["spec"]
     data = renderer_timing(spec)
+    fingerprint_data = project_fingerprints(project)
+    if native_v2 and artifact_state(project)["artifact_details"]["renders"][kind]["status"] == "ready":
+        _append(job, f"{kind}: использую проверенную неизменяемую версию render", 100)
+        return
     timing_path = root / "timing.json"
     timing_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     title_path = root / "scene-titles.json"
@@ -307,11 +479,18 @@ def _make_render(project: dict, job: dict, kind: str) -> None:
         rows = rows_by_scene[scene["id"]]
         if not rows:
             continue
-        key = _segment_key(scene, spec, kind)
+        segment_fingerprint = fingerprint_data["segments"][str(scene["id"])][kind]
+        key = segment_fingerprint["fingerprint"]
         cache_id = f"{scene['id']}:{key}"
         cached = cache.get(cache_id, {})
-        segment = root / cached.get("file", "") if cached.get("file") else None
-        if cached.get("key") != key or not segment or not segment.is_file():
+        if not isinstance(cached, dict):
+            cached = {}
+        segment = _safe_cached_file(root, cached.get("file"))
+        content_valid = bool(segment and segment.is_file())
+        if content_valid and native_v2:
+            expected_sha = cached.get("content_sha256") if isinstance(cached, dict) else None
+            content_valid = bool(expected_sha and verify_project_file(root, str(cached["file"]), expected_sha).get("integrity_ok"))
+        if cached.get("key") != key or not content_valid:
             first_start = float(rows[0]["start"])
             local_rows = []
             for row in rows:
@@ -339,7 +518,11 @@ def _make_render(project: dict, job: dict, kind: str) -> None:
                     _append(job, line.strip()[:240])
             if process.wait():
                 raise RuntimeError(f"Не удалось собрать сцену «{scene.get('title', scene['id'])}». Проверьте Pillow и MoviePy.")
-            cache[cache_id] = {"key": key, "file": str(segment.relative_to(root))}
+            cache[cache_id] = {"key": key, "fingerprint": key,
+                               "dependencies": segment_fingerprint["dependencies"],
+                               "file": str(segment.relative_to(root)),
+                               "content_sha256": _sha256_file(segment),
+                               "size_bytes": segment.stat().st_size}
             cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
             rendered_count += 1
         segment_paths.append(segment)
@@ -357,8 +540,30 @@ def _make_render(project: dict, job: dict, kind: str) -> None:
     completed = subprocess.run(command, cwd=str(ROOT), capture_output=True, text=True)
     if completed.returncode:
         raise RuntimeError("Не удалось склеить сцены в MP4: " + (completed.stderr[-700:] if completed.stderr else "ошибка FFmpeg"))
-    (root / "render.meta.json").write_text(json.dumps({"hash": artifact_state(project)["render_hash"], "kind": kind}, ensure_ascii=False), encoding="utf-8")
-    _append(job, f"Видео готово: {output.name}", 96)
+    render_fingerprint = fingerprint_data["renders"][kind]
+    previous_sidecar = _read_cache(out_dir / f"{kind}.meta.json")
+    asset_record = None
+    if native_v2:
+        asset_record = register_asset_file(project["id"], output,
+                                           asset_type="preview" if kind == "draft" else "final_render",
+                                           target={"kind": kind}, extension=".mp4", mime="video/mp4",
+                                           input_fingerprint=render_fingerprint["fingerprint"])
+        immutable_output = root / asset_record["path"]
+        _atomic_copy(immutable_output, compatibility_output)
+        output.unlink(missing_ok=True)
+    else:
+        asset_record = {"path": compatibility_output.relative_to(root).as_posix(),
+                        "render_version": int(previous_sidecar.get("render_version", 0)) + 1,
+                        "asset_id": None, "sha256": None}
+    sidecar = {"fingerprint": render_fingerprint["fingerprint"], "hash": render_fingerprint["fingerprint"],
+               "fingerprint_version": fingerprint_data["fingerprint_version"],
+               "dependencies": render_fingerprint["dependencies"], "kind": kind,
+               "render_version": int(asset_record["render_version"]), "asset_id": asset_record["asset_id"],
+               "path": asset_record["path"], "sha256": asset_record["sha256"], "created_at": time.time()}
+    (out_dir / f"{kind}.meta.json").write_text(json.dumps(sidecar, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Keep the legacy metadata mirror for the existing UI and pipeline readers.
+    (root / "render.meta.json").write_text(json.dumps(sidecar, ensure_ascii=False), encoding="utf-8")
+    _append(job, f"Видео готово: {compatibility_output.name}", 96)
 
 
 def get_job(job_id: str) -> dict | None:

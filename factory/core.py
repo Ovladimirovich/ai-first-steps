@@ -7,13 +7,14 @@ import mimetypes
 import re
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .revisions import create_revision, list_revisions as _list_revisions, read_revision as _read_revision
 from .schema_v2 import empty_asset_manifest, merge_v1_view, validate_production, validate_story_v2, v1_to_v2, v2_to_v1
 from .storage import atomic_write_json, project_lock
 from .timing import timing_for
+from .fingerprints import changed_dependencies, project_fingerprints, verify_asset_record, verify_project_file
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = ROOT / ".factory" / "projects"
@@ -65,7 +66,39 @@ def _read_asset_manifest(directory: Path) -> dict:
         raise ValueError(f"Реестр ассетов повреждён: {path}") from exc
     if not isinstance(value, dict) or not isinstance(value.get("assets"), list):
         raise ValueError(f"Некорректная структура реестра ассетов: {path}")
+    if int(value.get("manifest_version", 1)) < 1:
+        raise ValueError(f"Некорректная версия реестра ассетов: {path}")
+    seen_ids = set()
+    for item in value["assets"]:
+        if not isinstance(item, dict):
+            raise ValueError(f"Некорректная запись ассета: {path}")
+        asset_id, relative = str(item.get("asset_id", "")), str(item.get("path", ""))
+        pure_path = PurePosixPath(relative)
+        if (not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", asset_id) or asset_id in (".", "..")
+                or asset_id in seen_ids or not relative or pure_path.is_absolute()
+                or "\\" in relative or any(part in (".", "..") for part in pure_path.parts)):
+            raise ValueError(f"Некорректная или небезопасная запись ассета в {path}")
+        seen_ids.add(asset_id)
+        sha = item.get("sha256")
+        if sha is not None and not re.fullmatch(r"[0-9a-f]{64}", str(sha)):
+            raise ValueError(f"Некорректный SHA-256 ассета {asset_id}")
+        if int(item.get("asset_version", item.get("sequence", 0))) < 1:
+            raise ValueError(f"Некорректная версия ассета {asset_id}")
     return value
+
+
+def _validate_asset_manifest_append_only(previous: dict, updated: dict) -> None:
+    """Reject deletion or mutation of existing immutable asset records."""
+    if int(updated.get("manifest_version", 1)) < int(previous.get("manifest_version", 1)):
+        raise ValueError("Версия реестра ассетов не может быть понижена")
+    old_records = {str(item.get("asset_id")): item for item in previous.get("assets", []) if item.get("asset_id")}
+    new_records = [item for item in updated.get("assets", []) if isinstance(item, dict)]
+    new_by_id = {str(item.get("asset_id")): item for item in new_records if item.get("asset_id")}
+    if len(new_by_id) != len(new_records):
+        raise ValueError("Реестр ассетов содержит отсутствующие или повторяющиеся asset_id")
+    for asset_id, record in old_records.items():
+        if new_by_id.get(asset_id) != record:
+            raise ValueError(f"Неизменяемая версия ассета {asset_id} удалена или изменена")
 
 
 def _read_v2_state(directory: Path, metadata: dict) -> tuple[dict, dict]:
@@ -197,6 +230,7 @@ def save_project(project: dict) -> None:
 
         current_story, current_production = _read_v2_state(directory, stored_metadata)
         manifest = _read_asset_manifest(directory)
+        previous_manifest = copy.deepcopy(manifest)
         native_update = project.get("_native_update")
         if native_update:
             story = copy.deepcopy(native_update["spec"])
@@ -204,6 +238,7 @@ def save_project(project: dict) -> None:
         else:
             story, production = merge_v1_view(project["spec"], current_story, current_production)
         manifest = _sync_legacy_assets(directory, story, production, manifest)
+        _validate_asset_manifest_append_only(previous_manifest, manifest)
         validate_story_v2(story)
         validate_production(production)
         story_changed = digest(story) != digest(current_story)
@@ -456,29 +491,205 @@ def renderer_timing(spec: dict) -> dict:
     return data
 
 
-def artifact_state(project: dict) -> dict:
+def _read_metadata(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _stored_fingerprint(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    return str(value.get("fingerprint")) if isinstance(value, dict) and value.get("fingerprint") else None
+
+
+def _cached_status(path: Path, record: Any, current: dict, root: Path | None = None) -> tuple[str, list[str]]:
+    stored = _stored_fingerprint(record)
+    candidate = path
+    if isinstance(record, dict) and record.get("file") and root is not None:
+        candidate = (root / str(record["file"])).resolve()
+        if root.resolve() not in candidate.parents:
+            return "stale", ["asset_path_integrity"]
+    if not candidate.is_file():
+        return "missing", []
+    if stored == current.get("fingerprint"):
+        return "ready", []
+    return "stale", changed_dependencies(record if isinstance(record, dict) else None, current)
+
+
+def _cache_asset_integrity(record: Any, manifest_by_id: dict, root: Path, *,
+                           force: bool = False, compatibility_path: str | None = None) -> list[str]:
+    if not isinstance(record, dict) or not record.get("asset_id"):
+        return []
+    asset_record = manifest_by_id.get(str(record["asset_id"]))
+    if not asset_record:
+        return ["asset_missing_from_manifest"]
+    state = verify_asset_record(asset_record, root, force=force)
+    if not state.get("available") or not state.get("integrity_ok"):
+        return ["asset_integrity"]
+    if compatibility_path:
+        alias = verify_project_file(root, compatibility_path, asset_record.get("sha256"), force=force)
+        if not alias.get("integrity_ok"):
+            return ["compatibility_alias_integrity"]
+    return []
+
+
+def artifact_state(project: dict, *, force_asset_hash: bool = False) -> dict:
     spec = project["spec"]
     root = project_dir(project["id"])
     scenes = spec.get("script", {}).get("scenes", [])
     lines = [line for scene in scenes for line in scene.get("lines", [])]
-    voice_hash = digest({"lines": lines, "heroes": spec.get("heroes"), "provider": "demo-silence-v1"})
-    frame_hash = digest({"scenes": [{k: s.get(k) for k in ("id", "title", "visual_note", "image", "lines")} for s in scenes], "look": spec.get("look"), "renderer": RENDERER_VERSION})
-    render_hash = digest({"voice": voice_hash, "frames": frame_hash, "timing": timing_for(spec), "format": spec.get("format"), "renderer": RENDERER_VERSION})
-    voices_ready = (root / "audio" / "voice_track.mp3").exists() and (root / "voice.meta.json").exists()
-    frames_ready = (root / "frames").exists() and all((root / "frames" / f"{s['id']}.jpg").exists() for s in scenes)
-    render_ready = (root / "renders" / "draft.mp4").exists()
-    vm = json.loads((root / "voice.meta.json").read_text(encoding="utf-8")) if (root / "voice.meta.json").exists() else {}
-    fm = json.loads((root / "frames.meta.json").read_text(encoding="utf-8")) if (root / "frames.meta.json").exists() else {}
-    rm = json.loads((root / "render.meta.json").read_text(encoding="utf-8")) if (root / "render.meta.json").exists() else {}
-    def status(ready, old, hash_value):
-        return "missing" if not ready else ("ready" if old == hash_value else "stale")
+    if int(project.get("schema_version", 1)) >= 2:
+        metadata = _read_metadata(root / "project.json")
+        story, production = _read_v2_state(root, metadata)
+        manifest = _read_asset_manifest(root)
+    else:
+        story, production = v1_to_v2(spec)
+        manifest = empty_asset_manifest()
+    fingerprints = project_fingerprints(project, story=story, production=production,
+                                        manifest=manifest, root=root, force_hash=force_asset_hash)
+    manifest_by_id = {str(item.get("asset_id")): item for item in manifest.get("assets", []) if item.get("asset_id")}
+    voice_hash = digest({"fingerprint_version": fingerprints["fingerprint_version"],
+                         "timing": fingerprints["components"]["timing"],
+                         "lines": {key: item["fingerprint"] for key, item in fingerprints["voice_lines"].items()}})
+    frame_hash = digest({"fingerprint_version": fingerprints["fingerprint_version"],
+                         "frames": {key: item["fingerprint"] for key, item in fingerprints["frames"].items()}})
+    render_hash = fingerprints["renders"]["draft"]["fingerprint"]
+
+    voice_cache = _read_metadata(root / "voice-cache.json")
+    frame_cache = _read_metadata(root / "frames-cache.json")
+    segment_cache = _read_metadata(root / "segment-cache.json")
+    line_statuses, frame_statuses, segment_statuses, image_generation_statuses = {}, {}, {}, {}
+    stale_reasons = []
+    for line in lines:
+        line_id = str(line.get("id", ""))
+        current = fingerprints["voice_lines"].get(line_id, {"fingerprint": "", "dependencies": {}})
+        cache_entry = voice_cache.get(line_id)
+        state, changed = _cached_status(root / "audio" / f"{line_id}.mp3", cache_entry, current, root)
+        integrity = _cache_asset_integrity(cache_entry, manifest_by_id, root, force=force_asset_hash,
+                                          compatibility_path=f"audio/{line_id}.mp3")
+        if integrity and state != "missing":
+            state, changed = "stale", integrity
+        line_statuses[line_id] = {"status": state, "fingerprint": current["fingerprint"],
+                                  "changed_dependencies": changed}
+        if state == "stale":
+            stale_reasons.append({"target": f"voice:{line_id}", "changed_dependencies": changed})
+    for scene in scenes:
+        scene_id = str(scene.get("id", ""))
+        current = fingerprints["frames"].get(scene_id, {"fingerprint": "", "dependencies": {}})
+        cache_entry = frame_cache.get(scene_id)
+        state, changed = _cached_status(root / "frames" / f"{scene_id}.jpg", cache_entry, current, root)
+        integrity = _cache_asset_integrity(cache_entry, manifest_by_id, root, force=force_asset_hash,
+                                          compatibility_path=f"frames/{scene_id}.jpg")
+        if integrity and state != "missing":
+            state, changed = "stale", integrity
+        frame_statuses[scene_id] = {"status": state, "fingerprint": current["fingerprint"],
+                                    "changed_dependencies": changed}
+        if state == "stale":
+            stale_reasons.append({"target": f"frame:{scene_id}", "changed_dependencies": changed})
+        visual_candidates = [item for item in manifest.get("assets", [])
+                             if item.get("type") == "scene_image"
+                             and str(item.get("target", {}).get("scene_id", "")) == scene_id
+                             and item.get("input_fingerprint")]
+        current_visual_fp = fingerprints["image_generation"].get(scene_id, {}).get("fingerprint")
+        if not visual_candidates:
+            image_state, image_changed = "missing", []
+        elif any(item.get("input_fingerprint") == current_visual_fp for item in visual_candidates):
+            image_state, image_changed = "ready", []
+        else:
+            image_state, image_changed = "stale", ["scene_context_or_prompt_or_model_parameters"]
+            stale_reasons.append({"target": f"image_generation:{scene_id}", "changed_dependencies": image_changed})
+        image_generation_statuses[scene_id] = {"status": image_state,
+                                               "fingerprint": current_visual_fp,
+                                               "candidate_asset_ids": [item["asset_id"] for item in visual_candidates],
+                                               "changed_dependencies": image_changed}
+        variants = {}
+        for kind in ("draft", "final"):
+            wanted = fingerprints["segments"].get(scene_id, {}).get(kind, {})
+            cache_key = f"{scene_id}:{wanted.get('fingerprint', '')}"
+            cache_entry = segment_cache.get(cache_key)
+            segment_path = (root / cache_entry["file"]).resolve() if isinstance(cache_entry, dict) and cache_entry.get("file") else None
+            if segment_path and root.resolve() in segment_path.parents and segment_path.is_file():
+                if int(project.get("schema_version", 1)) >= 2:
+                    expected_sha = cache_entry.get("content_sha256") if isinstance(cache_entry, dict) else None
+                    verified = bool(expected_sha and verify_project_file(root, str(cache_entry["file"]), expected_sha,
+                                                                          force=force_asset_hash).get("integrity_ok"))
+                    state, changed = ("ready", []) if verified else ("stale", ["segment_content_integrity"])
+                else:
+                    state, changed = "ready", []
+            else:
+                has_old = any(key.startswith(f"{scene_id}:") and isinstance(value, dict)
+                              and value.get("file") and root.resolve() in (root / value["file"]).resolve().parents
+                              and (root / value["file"]).is_file() for key, value in segment_cache.items())
+                state = "stale" if has_old else "missing"
+                previous = next((value for key, value in segment_cache.items()
+                                 if key.startswith(f"{scene_id}:") and isinstance(value, dict)), None)
+                changed = changed_dependencies(previous, wanted) if state == "stale" else []
+            variants[kind] = {"status": state, "fingerprint": wanted.get("fingerprint"),
+                              "changed_dependencies": changed}
+            if state == "stale":
+                stale_reasons.append({"target": f"segment:{scene_id}:{kind}", "changed_dependencies": changed})
+        segment_statuses[scene_id] = variants
+
+    vm = _read_metadata(root / "voice.meta.json")
+    fm = _read_metadata(root / "frames.meta.json")
+    render_ready = (root / "renders" / "draft.mp4").is_file()
+    voices_ready = (root / "audio" / "voice_track.mp3").is_file() and bool(vm)
+    frames_ready = (root / "frames").is_dir() and all((root / "frames" / f"{scene['id']}.jpg").is_file() for scene in scenes)
+
+    def aggregate_status(ready: bool, metadata: dict, wanted: str) -> str:
+        if not ready:
+            return "missing"
+        return "ready" if metadata.get("hash") == wanted else "stale"
+
+    voice_status = aggregate_status(voices_ready, vm, voice_hash)
+    if voice_status != "missing" and _cache_asset_integrity(vm, manifest_by_id, root, force=force_asset_hash,
+                                               compatibility_path="audio/voice_track.mp3"):
+        voice_status = "stale"
+    frames_status = aggregate_status(frames_ready, fm, frame_hash)
+    render_statuses = {}
+    for kind in ("draft", "final"):
+        output = root / "renders" / ("draft.mp4" if kind == "draft" else "final.mp4")
+        metadata = _read_metadata(root / "renders" / f"{kind}.meta.json")
+        if not metadata:
+            legacy_meta = _read_metadata(root / "render.meta.json")
+            if legacy_meta.get("kind") == kind:
+                metadata = legacy_meta
+        wanted = fingerprints["renders"][kind]
+        state = "missing" if not output.is_file() else ("ready" if metadata.get("fingerprint", metadata.get("hash")) == wanted["fingerprint"] else "stale")
+        changed = [] if state != "stale" else changed_dependencies(metadata, wanted)
+        integrity = _cache_asset_integrity(metadata, manifest_by_id, root, force=force_asset_hash,
+                                          compatibility_path=f"renders/{kind}.mp4")
+        if integrity and state != "missing":
+            state, changed = "stale", integrity
+        render_statuses[kind] = {"status": state, "fingerprint": wanted["fingerprint"],
+                                 "changed_dependencies": changed}
+        if state == "stale":
+            stale_reasons.append({"target": f"render:{kind}", "changed_dependencies": changed})
+
+    if voice_status == "stale" and not any(item["target"] == "voice:mix" for item in stale_reasons):
+        stale_reasons.append({"target": "voice:mix", "changed_dependencies": ["line_or_timing_fingerprints"]})
+    if frames_status == "stale":
+        stale_reasons.append({"target": "frames:aggregate", "changed_dependencies": ["scene_frame_fingerprints"]})
+    for asset_id, asset_state in fingerprints.get("assets", {}).items():
+        if asset_state.get("integrity_checked") and (not asset_state.get("available") or not asset_state.get("integrity_ok")):
+            stale_reasons.append({"target": f"asset:{asset_id}",
+                                  "changed_dependencies": ["asset_missing" if not asset_state.get("available") else "asset_integrity"]})
+    draft_meta = _read_metadata(root / "renders" / "draft.meta.json") or _read_metadata(root / "render.meta.json")
     return {
-        "voice": status(voices_ready, vm.get("hash"), voice_hash),
-        "frames": status(frames_ready, fm.get("hash"), frame_hash),
-        "render": status(render_ready, rm.get("hash"), render_hash),
+        "fingerprint_version": fingerprints["fingerprint_version"],
+        "voice": voice_status, "frames": frames_status, "render": render_statuses["draft"]["status"],
+        "final_render": render_statuses["final"]["status"],
         "voice_units": len(lines), "scene_units": len(scenes),
         "timing": timing_for(spec), "voice_hash": voice_hash, "frame_hash": frame_hash, "render_hash": render_hash,
         "video_url": f"/media/{project['id']}/renders/draft.mp4" if render_ready else None,
         "duration_s": round(timing_for(spec)["total"], 1),
-        "stale_reasons": ["Изменён сценарий, голос или оформление" ] if render_ready and rm.get("hash") != render_hash else [],
+        "fingerprints": fingerprints,
+        "assets": fingerprints.get("assets", {}),
+        "artifact_details": {"voice_lines": line_statuses, "image_generation": image_generation_statuses,
+                            "frames": frame_statuses, "segments": segment_statuses,
+                            "renders": render_statuses},
+        "stale_reasons": stale_reasons,
     }
