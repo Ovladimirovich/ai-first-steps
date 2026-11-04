@@ -27,6 +27,7 @@ remotion/public/timing.json
 # OS generated
 .DS_Store
 Thumbs.db
+~$*
 
 # Editor / IDE
 .idea/
@@ -41,3 +42,7 @@ Desktop.ini
 .env
 .env.local
 .env.*.local
+
+# Python
+__pycache__/
+*.pyc

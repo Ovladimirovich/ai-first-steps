@@ -2,9 +2,9 @@
 
 **Тема:** 4 суперсилы ИИ для школьника · **Стиль:** Pixar 3D тёплый свет `#FFF6E0`, объём, тени, блики · **Хроно:** 379с 57 реплик · **Движок:** Remotion 4.0.300 + FFmpeg Pillow/MoviePy
 
-Ветка `arena/750486c0-ai-first-steps` самодостаточна — клонируй её:
+Клонируй репозиторий (ветка `main` самодостаточна):
 ```bash
-git clone --branch arena/750486c0-ai-first-steps https://github.com/Ovladimirovich/ai-first-steps.git
+git clone https://github.com/Ovladimirovich/ai-first-steps.git
 ```
 
 > Подробная документация — `docs/` (особенно [docs/02_QUICKSTART_WINDOWS.md](docs/02_QUICKSTART_WINDOWS.md) и [docs/05_PIPELINES.md](docs/05_PIPELINES.md))
@@ -28,10 +28,18 @@ git clone --branch arena/750486c0-ai-first-steps https://github.com/Ovladimirovi
 | `remotion/src/PixarMain.tsx` + `Root.tsx` | Композиция `PixarWhyAI` 1920×1080 30fps `durationInFrames ceil((379+6)*30)=11550` |
 | `assets/pixar/classroom_pixar.jpg` 274К, `clouds_pixar_bg.jpg` 86К | Фоны мастерской |
 | `tools/build_pixar_timing.py` / `build_pixar_real_timeline.py` | Эмуляция по тексту vs реальный `ffprobe` |
-| `tools/build_ffmpeg_video.py` ★ | **FFmpeg-ветка 3-5 мин** 1920×1080 114 картинок + MoviePy |
+| `tools/build_ffmpeg_video.py` ★ | **FFmpeg-ветка**: карточки (3-5 мин) или мультфильм с персонажами (`--motion 3 --workers 2`) |
+| `tools/pixar_frame.py` ★ | `FrameRenderer` — кадр: пер-сценный фон + Бит и Маша + карточка + караоке + камера |
+| `assets/pixar/bit*.png`, `masha*.png` | Спрайты персонажей 400×400 с прозрачным фоном, 3 эмоции каждому |
+| `assets/pixar/scene_0.1.jpg … scene_8.2.jpg` | 25 пер-сценных фонов 1920×1080 |
+| `tools/prepare_pixar_sprites.py` / `tools/make_scene_backgrounds.py` | Срез белого фона у спрайтов / сборка 25 фонов из пула `bgpool_*` |
 | `tools/render_pixar_chunks.sh` | Чанки по 1500 кадров для слабых ПК (`preview/chunks_pixar`) |
 | `preview/pixar-why-ai-preview.mp4` 7.8МБ 6:18 | Превью FFmpeg цвет+voice+subs (уже готов) |
-| `preview/pixar-why-ai-ffmpeg.mp4` 26МБ 6:19 | **Финал FFmpeg 5:18 medium** |
+| `preview/pixar-why-ai-ffmpeg.mp4` 26МБ 6:19 | Финал FFmpeg 5:18 medium (слайд-режим) |
+| `preview/pixar-char-test-12s.mp4` 3.9МБ | Тест character mode: персонажи + караоке + SFX |
+| `release/pixar-why-ai-characters.mp4` 154МБ | **Финал: мультфильм с персонажами, 6:19 1080p 30fps crf18** (собирается локально, `release/` в .gitignore) |
+| `preview/pixar-characters-preview.mp4` 4.3МБ | Нарезка финала 1:07 720p — посмотреть без рендера |
+| `preview/pixar-characters-stills.jpg` 707К | 8 кадров из финала |
 | `.github/workflows/render-pixar.yml` | Cloud Remotion ~60 мин |
 | `.github/workflows/render-ffmpeg.yml` | **Cloud FFmpeg ~4 мин ultrafast** |
 
@@ -59,7 +67,16 @@ npx remotion render src/index.ts PixarWhyAI ../release/pixar-why-ai-full.mp4 --c
 # чанками: bash ../tools/render_pixar_chunks.sh pixar-why-ai-full.mp4
 ```
 
-**Тракт B — FFmpeg (быстро, 3-5 мин, рекомендуется):**
+**Тракт B — FFmpeg, мультфильм с персонажами (рекомендуется, ~11-20 мин):**
+```bash
+pip install Pillow numpy imageio-ffmpeg
+python tools/build_ffmpeg_video.py --motion 3 --workers 2 \
+    --output release/pixar-why-ai-characters.mp4 --crf 18 --preset medium --concurrency 2
+python tools/build_ffmpeg_video.py --only 2 --motion 3 --output preview/test.mp4 --preset ultrafast --crf 26  # тест 12с
+```
+Подробности — [docs/09_CHARACTER_RENDER.md](docs/09_CHARACTER_RENDER.md).
+
+**Тракт B2 — FFmpeg, слайд-карточки (быстро, 3-5 мин):**
 ```bash
 pip install Pillow moviepy==1.0.3 imageio-ffmpeg
 python tools/build_ffmpeg_video.py --output release/pixar-why-ai-ffmpeg.mp4 --crf 18 --preset medium

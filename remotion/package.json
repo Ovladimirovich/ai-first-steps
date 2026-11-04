@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "build:timeline": "python ../tools/build_timeline.py",
+    "build:pixar-timeline": "python ../tools/build_pixar_real_timeline.py",
+    "predev": "npm run build:timeline && npm run build:pixar-timeline",
+    "prerender": "npm run build:timeline && npm run build:pixar-timeline",
     "dev": "remotion studio src/index.ts --port 3000",
     "render": "remotion render src/index.ts Main ../release/final.mp4 --codec h264 --crf 18",
     "render:nosubs": "remotion render src/index.ts Main ../release/final_nosubs.mp4 --props='{\"subs\":false}' --codec h264 --crf 18",

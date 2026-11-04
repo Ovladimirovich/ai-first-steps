@@ -12,7 +12,8 @@
 | [06_PIXAR_SCENES.md](06_PIXAR_SCENES.md) | Pixar-версия «Зачем ИИ школьнику» — 25 сцен, темы, тайминг 379с |
 | [07_TIMELINE_VOICE.md](07_TIMELINE_VOICE.md) | Как работает таймлайн, озвучка, субтитры |
 | [08_TROUBLESHOOTING.md](08_TROUBLESHOOTING.md) | Node 24, No browser, OOM, антивирус, пути с кириллицей |
+| [09_CHARACTER_RENDER.md](09_CHARACTER_RENDER.md) | Мультфильм с персонажами: спрайты Бит/Маша, 25 фонов, камера, эмоции, `--workers` |
 | [../README.md](../README.md) | Короткий старт для оригинала «Первые шаги в ИИ» |
 | [../README_PIXAR.md](../README_PIXAR.md) | Короткий старт для Pixar-версии |
 
-**Быстрый старт:** если уже склонировал ветку `arena/750486c0-ai-first-steps` → иди в `02_QUICKSTART_WINDOWS.md`.
+**Быстрый старт:** склонировал репозиторий → иди в `02_QUICKSTART_WINDOWS.md`.

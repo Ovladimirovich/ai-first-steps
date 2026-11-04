@@ -8,7 +8,7 @@ FF=imageio_ffmpeg.get_ffmpeg_exe(); R=os.path.dirname(os.path.dirname(os.path.ab
 def dur(f):
     o=subprocess.run([FF,'-i',f],capture_output=True,text=True).stderr
     h,m,s=re.search(r'Duration: (\d+):(\d+):([\d.]+)',o).groups(); return int(h)*3600+int(m)*60+float(s)
-lines=json.load(open(f'{R}/script/lines.json'))
+lines=json.load(open(f'{R}/script/lines.json',encoding='utf-8'))
 t=0.0; prev_scene=None; out=[]; missing=[]; files=[]
 for l in lines:
     f=f"{R}/assets/audio/voice/{l['id']}.mp3"
@@ -42,10 +42,10 @@ for l in out:
     cs=chunks(l['text']); tot=sum(len(c) for c in cs); t0=l['start']
     for c in cs:
         d=l['dur']*len(c)/tot; cues.append({'who':l['who'],'text':c,'start':round(t0,3),'end':round(t0+d,3)}); t0+=d
-json.dump({'fps':30,'total':round(t,2),'lines':out,'cues':cues},open(f'{R}/remotion/public/timing.json','w'),ensure_ascii=False,indent=1)
+json.dump({'fps':30,'total':round(t,2),'lines':out,'cues':cues},open(f'{R}/remotion/public/timing.json','w',encoding='utf-8'),ensure_ascii=False,indent=1)
 # SRT
 def ts(x): h=int(x//3600);m=int(x%3600//60);s=x%60; return f"{h:02}:{m:02}:{int(s):02},{int(s*1000%1000):03}"
-with open(f'{R}/subtitles/ru.srt','w') as fh:
+with open(f'{R}/subtitles/ru.srt','w',encoding='utf-8') as fh:
     for i,l in enumerate(cues,1): fh.write(f"{i}\n{ts(l['start'])} --> {ts(l['end'])}\n{l['text']}\n\n")
 # voice track: place each clip at its offset
 if files:
