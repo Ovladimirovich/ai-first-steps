@@ -261,7 +261,8 @@ def draft_with_llama(spec: dict, settings: dict) -> dict:
     payload = {"model": model, "messages": [
         {"role": "system", "content": "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."},
         {"role": "user", "content": prompt},
-    ], "temperature": 0.55, "max_tokens": 3200}
+    ], "temperature": 0.55, "max_tokens": 3200,
+        "response_format": {"type": "json_object"}}
     response = _request_json(base + "/chat/completions", payload, timeout=240)
     try:
         content = response["choices"][0]["message"]["content"]

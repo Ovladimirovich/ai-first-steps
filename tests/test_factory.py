@@ -47,8 +47,9 @@ class FactoryTimingTests(unittest.TestCase):
             {"title": "Объяснение", "purpose": "point", "goal": "Понять", "visual_note": "Свет", "lines": [{"hero": "h1", "text": "Свет состоит из разных цветов."}]},
             {"title": "Вывод", "purpose": "payoff", "goal": "Запомнить", "visual_note": "Радуга", "lines": [{"hero": "h2", "text": "Теперь я знаю ответ!"}]},
         ]})}}]}
-        with patch("factory.providers._request_json", side_effect=[{"data": [{"id": "Qwen-local"}]}, response]):
+        with patch("factory.providers._request_json", side_effect=[{"data": [{"id": "Qwen-local"}]}, response]) as request:
             result = draft_with_llama(spec, {"llama_cpp_base_url": "http://127.0.0.1:8081", "llama_cpp_model": ""})
+        self.assertEqual(request.call_args_list[1].args[1]["response_format"], {"type": "json_object"})
         self.assertEqual(result["script"]["generator"]["provider"], "llama_cpp")
         self.assertEqual(len(result["script"]["scenes"]), 3)
         self.assertEqual(result["script"]["scenes"][0]["lines"][0]["id"], "l1")
