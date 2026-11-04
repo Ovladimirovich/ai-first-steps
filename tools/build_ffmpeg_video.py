@@ -285,7 +285,7 @@ def draw_pixar_frame(text, who, scene, s, W=1920, H=1080, bg_img=None, karaoke_f
     draw.rounded_rectangle([px, py, px+int(pw*prog), py+int(6*scale)], radius=3, fill=hex_to_rgb(P["yellow"])+(opacity,))
     return img
 
-def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=False):
+def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=False, bg_strength=0.18):
     """
     Рисует 1920x1080 кадр в стиле PixarCard через Pillow:
     - тёплый фон #FFF6E0 + лёгкий градиент/картинка облаков
@@ -306,7 +306,7 @@ def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=Fals
         try:
             bg = Image.open(bg_path).convert("RGB").resize((W, H), Image.LANCZOS)
             # осветляем и смешиваем
-            bg = Image.blend(img, bg, 0.18)
+            bg = Image.blend(img, bg, bg_strength)
             img = bg
             draw = ImageDraw.Draw(img, "RGBA")
         except: pass
@@ -963,7 +963,13 @@ def main():
 if __name__ == "__main__":
     main()
 # --- Added from b2a47ef commit: scene_bg_dir and bg_for_scene ---
-scene_bg_dir = Path(args.scene_bg_dir).resolve() if args.scene_bg_dir else None
+# Module-level defaults keep this file importable as a module (the factory
+# pipeline loads it via _engine_module) and CLI-safe: args/bg_path are locals
+# of main(), so they must not be referenced at module level.
+scene_bg_dir = None
+bg_path = None
+
+
 def bg_for_scene(scene_id):
     if scene_bg_dir and scene_bg_dir.is_dir():
         safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
