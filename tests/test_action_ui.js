@@ -64,6 +64,8 @@ assert.match(html, /applyAction/);
 assert.match(html, /rejectAction/);
 assert.match(html, /Старый текст/);
 assert.match(html, /Новый &lt;текст&gt;/);
+assert.match(html, /Сначала примените или отклоните текущий вариант/);
+assert.match(html, /disabled title="Разрешите текущее предложение выше"/);
 
 vm.runInContext(`activeAction = ${JSON.stringify({ ...proposal, status: 'running', job_id: 'job-test' })}; actionJob = { state: 'running', progress: 40 };`, context);
 html = vm.runInContext('renderScript()', context);

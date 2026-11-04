@@ -27,11 +27,12 @@ function renderIntent(){const s=project.spec, names=s.heroes||[];return `${rootH
 function estimateWords(s){return s.script.scenes?.flatMap(x=>x.lines||[]).length||({30:4,45:6,60:8,90:12,120:16}[s.intent.target_duration_s]||8)}
 function renderScript(){
  const scenes=project.spec.script.scenes||[];
- const locked=Boolean(activeAction&&['proposed','confirmed','queued','running','candidate_ready','apply_pending'].includes(activeAction.status));
+ const locked=Boolean(activeAction&&['proposed','confirmed','queued','running','candidate_ready','apply_pending','failed','cancelled'].includes(activeAction.status));
+ const blockedDraftLabel=activeAction?.status==='candidate_ready'?'Сначала примените или отклоните текущий вариант':activeAction?.status==='apply_pending'?'Дождитесь завершения применения':activeAction?.status==='failed'||activeAction?.status==='cancelled'?'Сначала закройте или повторите текущее предложение':'Сначала завершите текущее предложение';
  return `${rootHead('ТЕКСТ','Проверьте историю','Ручные правки сохраняются в проект. Предложения помощника отдельно проверяются и не применяются автоматически.')}
  ${scenes.length?scenes.map((scene,i)=>`<section class="scene-card"><div class="scene-head"><span class="scene-index">${i+1}</span><input data-scene-title="${i}" value="${esc(scene.title)}" aria-label="Название сцены" ${locked?'disabled':''}><button class="del-button" title="Удалить сцену" data-delete-scene="${i}" ${locked?'disabled':''}>×</button></div><div class="scene-goal">${esc(scene.goal||'')}</div>${scene.lines.map((line,j)=>{const hero=project.spec.heroes.find(h=>h.id===line.hero);return `<div class="line-row"><div class="speaker">${esc(hero?.name||'Герой')}</div><textarea class="line-text" data-line="${i}:${j}" ${locked?'disabled':''}>${esc(line.text)}</textarea></div>`}).join('')}</section>`).join(''):`<div class="empty-state">Введите тему на шаге «Замысел», затем создайте предложение помощнику. Оно появится здесь для проверки и не изменит принятый сценарий.</div>`}
  ${renderActionPanel()}
- <div class="action-row"><button class="secondary" id="draftScript" ${locked?'disabled':''}>${scenes.length?'Предложить другой вариант':'Создать предложение сценария'}</button><button class="primary" id="toVoice" ${scenes.length&&!locked?'':'disabled'}>К озвучке&nbsp; →</button></div>`;
+ <div class="action-row"><button class="secondary" id="draftScript" ${locked?'disabled title="Разрешите текущее предложение выше"':''}>${locked?esc(blockedDraftLabel):scenes.length?'Предложить другой вариант':'Создать предложение сценария'}</button><button class="primary" id="toVoice" ${scenes.length&&!locked?'':'disabled'}>К озвучке&nbsp; →</button></div>`;
 }
 function actionConsentFields(action, retry=false){
  const cloud=Boolean(action?.requires_cloud_consent), ceiling=action?.cost_ceiling||{};
@@ -104,6 +105,7 @@ async function fetchStudioState(){if(!project)return;try{studio=await api(`/api/
 async function createProject(){const theme=$('#newTheme').value.trim();if(!theme){toast('Сначала напишите тему');$('#newTheme').focus();return}try{project=await api('/api/projects',{method:'POST',body:JSON.stringify({theme,audience:$('#newAudience').value,duration:Number($('#newDuration').value),style:selectedNewStyle})});currentStep=0;activeAction=null;actionJob=null;artifacts=await api(`/api/projects/${project.id}/artifacts`);await fetchStudioState();render();toast('Ролик создан — продолжим с замысла')}catch(e){toast(e.message)}}
 async function openProject(id){try{project=await api(`/api/projects/${id}`);currentStep=Number(project.current_step||0);await fetchState();await fetchStudioState();await loadLatestAction();render();ensureActionPolling()}catch(e){toast(e.message)}}
 async function draft(){
+ if(activeAction&&!['applied','rejected','completed'].includes(activeAction.status)){toast('Сначала завершите текущее предложение: примените, отклоните или закройте его.');return}
  const button=$('#draftScript')||$('#toScript'),oldText=button?.textContent;
  if(button){button.disabled=true;button.textContent='Создаю предложение…'}
  try{
