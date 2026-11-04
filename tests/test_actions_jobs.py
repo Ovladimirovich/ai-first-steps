@@ -168,6 +168,35 @@ class ActionLifecycleTests(_TempProjects):
         self.assertEqual(json.loads((root / "project.json").read_text()), metadata)
         self.assertFalse((root / "studio" / "actions.jsonl").exists())
 
+    def test_in_place_generator_mutation_preserves_original_candidate_base(self):
+        from factory.core import digest
+        project = create_project({"theme": "Mutation regression", "duration": 30})
+        base_spec = copy.deepcopy(load_project(project["id"])["spec"])
+        proposal = propose_script_draft(project["id"])
+        job = confirm_action(project["id"], proposal["action_id"], {
+            "input_fingerprint": proposal["input_fingerprint"], "consent": True,
+            "privacy_scope": "local", "cost_ceiling": {"amount": 0, "currency": "RUB"}})
+        self.assertEqual(self.wait_job(project["id"], job["id"])["state"], "completed")
+        candidate = get_candidate(project["id"], proposal["action_id"])
+        self.assertEqual(candidate["base_spec"], base_spec)
+        self.assertEqual(candidate["base_spec_hash"], digest(base_spec))
+        self.assertNotEqual(candidate["candidate_spec_hash"], candidate["base_spec_hash"])
+        self.assertTrue(candidate["spec"]["script"]["scenes"])
+
+        # Simulate an older candidate whose base was overwritten by the mutating generator.
+        from factory.action_service import _publish_candidate
+        legacy_candidate = copy.deepcopy(candidate)
+        legacy_candidate["base_spec"] = copy.deepcopy(legacy_candidate["spec"])
+        legacy_candidate["base_spec_hash"] = legacy_candidate["candidate_spec_hash"]
+        _publish_candidate(project["id"], proposal["action_id"], get_action(project["id"], proposal["action_id"]),
+                           legacy_candidate, "demo", "rule-v1")
+        recovered = get_candidate(project["id"], proposal["action_id"])
+        self.assertEqual(recovered["base_spec"], base_spec)
+        self.assertEqual(recovered["base_spec_hash"], digest(base_spec))
+        applied = apply_action(project["id"], proposal["action_id"], {
+            "input_fingerprint": proposal["input_fingerprint"]})
+        self.assertTrue(applied["project"]["spec"]["script"]["scenes"])
+
     def test_apply_rejects_candidate_after_story_change(self):
         from factory import action_service
         project = create_project({"theme": "Stable until review", "duration": 30})

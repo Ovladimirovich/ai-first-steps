@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import time
@@ -171,6 +172,8 @@ def execute_script_draft_job(job: dict) -> None:
     project = load_project(job["project_id"])
     if int(project.get("schema_version", 1)) < 2:
         raise ValueError("Действие устарело: для него требуется проект v2")
+    base_spec = copy.deepcopy(project["spec"])
+    base_spec_hash = digest(base_spec)
     approval = job.get("approval") or {}
     if time.time() > float(approval.get("expires_at", 0)):
         raise ValueError("Подтверждение устарело; запустите действие заново")
@@ -183,7 +186,7 @@ def execute_script_draft_job(job: dict) -> None:
             ceiling_amount < (0.0000001 if action.get("requires_cloud_consent") else 0) or
             str(ceiling.get("currency", "")).upper() not in ("RUB", "EUR", "USD")):
         raise ValueError("Подтверждение согласия или предел стоимости недействительны")
-    if digest(project["spec"]) != action.get("base_spec_hash"):
+    if base_spec_hash != action.get("base_spec_hash"):
         raise ValueError("Сценарий изменился до запуска; результат не будет применён")
     settings, provider, model = _provider_settings()
     if _fingerprint(project, provider, model, settings,
@@ -195,7 +198,7 @@ def execute_script_draft_job(job: dict) -> None:
     try:
         existing = json.loads(path.read_text(encoding="utf-8"))
         if (existing.get("input_fingerprint") == job["input_fingerprint"] and
-                existing.get("base_spec_hash") == digest(project["spec"]) and
+                existing.get("base_spec_hash") == base_spec_hash and
                 existing.get("provider") == provider and existing.get("model") == model and
                 existing.get("candidate_spec_hash") == digest(existing.get("spec"))):
             validate_spec(existing["spec"])
@@ -220,18 +223,18 @@ def execute_script_draft_job(job: dict) -> None:
                                   "attempt": attempt, "provider": provider,
                                   "input_fingerprint": job["input_fingerprint"],
                                   "cost_ceiling": ceiling})
-        candidate_spec = draft_with_gigachat(project["spec"], settings, credentials)
+        candidate_spec = draft_with_gigachat(copy.deepcopy(base_spec), settings, credentials)
     elif provider == "llama_cpp":
         with LOCAL_MODEL_LOCK:
-            candidate_spec = draft_with_llama(project["spec"], settings)
+            candidate_spec = draft_with_llama(copy.deepcopy(base_spec), settings)
     else:
-        candidate_spec = draft_script(project["spec"])
+        candidate_spec = draft_script(copy.deepcopy(base_spec))
     if is_cancel_requested(job["project_id"], job["id"]):
         raise JobCancelled()
     validate_spec(candidate_spec)
     candidate = {"action_id": job["action_id"], "project_id": job["project_id"],
-                 "base_project_revision": project["revision"], "base_spec_hash": digest(project["spec"]),
-                 "base_spec": project["spec"], "input_fingerprint": job["input_fingerprint"],
+                 "base_project_revision": project["revision"], "base_spec_hash": base_spec_hash,
+                 "base_spec": base_spec, "input_fingerprint": job["input_fingerprint"],
                  "candidate_spec_hash": digest(candidate_spec),
                  "provider": provider, "model": model, "spec": candidate_spec, "created_at": time.time()}
     _publish_candidate(job["project_id"], job["action_id"], action, candidate, provider, model)
@@ -249,9 +252,23 @@ def get_candidate(project_id: str, action_id: str) -> dict:
     if not expected or hashlib.sha256(raw).hexdigest() != expected:
         raise ValueError("Файл кандидата повреждён или изменён")
     try:
-        return json.loads(raw.decode("utf-8"))
+        candidate = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise ValueError("Файл кандидата содержит некорректный JSON") from exc
+    # Recover candidates written by older workers that passed a mutating generator the
+    # accepted spec itself and consequently saved the generated spec as its own base.
+    action_base_hash = action.get("base_spec_hash")
+    candidate_spec_hash = candidate.get("candidate_spec_hash")
+    if (candidate.get("base_spec_hash") != action_base_hash and
+            candidate.get("base_spec_hash") == candidate_spec_hash and
+            digest(candidate.get("spec", {})) == candidate_spec_hash and
+            candidate.get("input_fingerprint") == action.get("input_fingerprint")):
+        current_project = load_project(project_id)
+        if digest(current_project["spec"]) == action_base_hash:
+            candidate["base_spec"] = copy.deepcopy(current_project["spec"])
+            candidate["base_spec_hash"] = action_base_hash
+            candidate["base_project_revision"] = action.get("base_project_revision", candidate.get("base_project_revision"))
+    return candidate
 
 def apply_action(project_id: str, action_id: str, body: dict) -> dict:
     with project_lock(project_id):
