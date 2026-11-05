@@ -413,9 +413,10 @@ def _synthesize_piper_line(job: dict, ffmpeg: str, executable: str, model: Path,
         source_duration = wav_duration(wav_path)
         target_seconds = max(0.5, float(target_seconds))
         speed = source_duration / target_seconds
-        # Cap speed-up at 1.3× to keep speech intelligible; extra time is absorbed by the pause
-        capped_speed = min(speed, 1.3)
-        # Actual output duration after atempo
+        # Never speed up TTS audio — it destroys intelligibility.
+        # If Piper is slower than the slot, just let it run long (pause absorbs the delta).
+        # If Piper is faster, slow down to fill the slot.
+        capped_speed = min(speed, 1.0)
         out_duration = source_duration / capped_speed if capped_speed > 0 else target_seconds
         audio_filter = f"{_atempo_filter(capped_speed)},apad,atrim=duration={out_duration:.3f}"
         convert = [ffmpeg, "-y", "-i", str(wav_path), "-vn", "-af", audio_filter,
