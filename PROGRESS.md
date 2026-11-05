@@ -27,9 +27,9 @@
 | M0 — каркас | ✅ `python -m factory`, русскоязычные 5 шагов, локальное хранение в `.factory/` |
 | M1 — сквозной прогон | ✅ демо-сценарий → немые аудиозаглушки → кадры → настоящий MP4 в плеере; перед каждым этапом смета и подтверждение |
 | Кэш | ✅ повторно используются неизменённые MP3 реплик, кадры и MP4-сегменты сцен; смета показывает число изменившихся сцен |
-| M2 — настоящие текст и голос | 🟡 адаптеры llama.cpp (`127.0.0.1:8081`, JSON-режим, ID модели автоматически заполняется при проверке) и GigaChat добавлены; локальный Windows-повтор после этих улучшений ещё не подтверждён, TTS пока демо |
+| M2 — настоящие текст и голос | 🟡 адаптеры llama.cpp (`127.0.0.1:8081`, JSON-режим, авто-ID и локальная попытка починки ответа) и GigaChat добавлены; пользователь подтвердил Windows-проход с Qwen2.5-3B до apply; TTS пока демо |
 | M3 — картинки на сцену и частичная пересборка MP4 | 🟡 загрузка своего фона на сцену, история вариантов и сборка только изменившихся сегментов готовы; платный/локальный генератор картинок не подключён |
-| M4 — доводка | 🟡 список проектов в боковой панели, явный переключатель проекта, скачивание SRT, устранены конфликтующие старые настройки в шапке; дальше — ручная Windows-проверка и полировка по результатам |
+| M4 — доводка | 🟡 список проектов в боковой панели, явный переключатель проекта, скачивание SRT, устранены конфликтующие старые настройки в шапке; локальный Windows workflow создания и применения черновика подтверждён пользователем |
 | Studio F1 — схема/ревизии/миграция | ✅ v2 spec + production, v1 adapter, явный dry-run/apply, snapshots/restore, persisted drafts API; legacy migration remains explicit |
 | Studio F2 — ассеты/fingerprints | ✅ content-addressed asset versions, append-only manifest, dependency fingerprints, separate Preview/Final; local Pillow/FFmpeg end-to-end MP4 smoke-test and unchanged-render cache reuse passed in a temporary project |
 | Studio F3 — журнал/очередь | ✅ append-only hash-chain action journal, consent/cost/fingerprint gates, persistent sequential queue, cancellation/retry/recovery; generator inputs are deep-copied to preserve candidate base; apply uses story-hash guard, recovers safe legacy candidates, and ignores UI-only revision bumps; Windows job reads retry transient sharing locks; legacy job-state facade retained |
