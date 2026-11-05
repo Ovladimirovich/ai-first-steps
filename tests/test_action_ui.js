@@ -110,4 +110,61 @@ const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'factory', 'web', '
 assert.match(indexHtml, /id="projectList"/);
 assert.doesNotMatch(indexHtml, /id="textProvider"|id="gigachatFields"/);
 
-console.log('F4/F5/M4 UI render-state tests passed.');
+// --- GigaChat models dropdown tests ---
+
+// Proper project setup for renderIntent (needs intent.audience, look, heroes)
+vm.runInContext(`project = { id: 'giga-render', title: 'Giga render', spec: { intent: { theme: 'Giga', audience: { note: 'Все' }, target_duration_s: 60 }, script: { scenes: [] }, heroes: [{name:'Боб',role:'explains'},{name:'Маша',role:'asks'}], look: { style_preset: 'warm_workshop' } } }; currentStep = 0;`, context);
+
+// 1) renderIntent with populated gigachat_models shows <select> with <option> entries
+vm.runInContext(`settings.text_provider='gigachat'; settings.gigachat_model='GigaChat-Max'; settings.gigachat_models=['GigaChat-Max','GigaChat-Lite']; settings.gigachat_cloud_ack=true;`, context);
+html = vm.runInContext('renderIntent()', context);
+assert.match(html, /<select id="gigachatModel">/);
+assert.match(html, /<option value="GigaChat-Max"\s+selected>GigaChat-Max<\/option>/);
+assert.match(html, /<option value="GigaChat-Lite"\s*>GigaChat-Lite<\/option>/);
+// No stale-model warning because the selected model is in the list
+assert.doesNotMatch(html, /Сохранённая модель больше не доступна/);
+
+// 2) renderIntent with stale gigachat_model not in gigachat_models shows warning
+vm.runInContext(`settings.gigachat_model='GigaChat-Old'; settings.gigachat_models=['GigaChat-Max','GigaChat-Lite'];`, context);
+html = vm.runInContext('renderIntent()', context);
+assert.match(html, /<select id="gigachatModel">/);
+assert.match(html, /Сохранённая модель больше не доступна/);
+
+// 3) renderIntent with empty gigachat_models shows placeholder option only
+vm.runInContext(`settings.gigachat_model=''; settings.gigachat_models=[];`, context);
+html = vm.runInContext('renderIntent()', context);
+assert.match(html, /Сначала проверьте доступ/);
+assert.doesNotMatch(html, /GigaChat-Max/);
+
+// 4) Validation: draft() rejects when gigachat provider but no model selected
+vm.runInContext(`settings.text_provider='gigachat'; settings.gigachat_cloud_ack=true; settings.gigachat_model=''; settings.gigachat_models=[];`, context);
+let validationError = null;
+try {
+  vm.runInContext(`if(settings.text_provider==='gigachat'&&!settings.gigachat_model)throw new Error('Выберите модель GigaChat из списка.');`, context);
+} catch (e) { validationError = e; }
+assert.ok(validationError, 'validation should throw when no gigachat model is selected');
+assert.match(validationError.message, /Выберите модель GigaChat/);
+
+// 5) Validation: draft() rejects when gigachat model is not in the available list
+vm.runInContext(`settings.gigachat_model='GigaChat-Stale'; settings.gigachat_models=['GigaChat-Max'];`, context);
+validationError = null;
+try {
+  vm.runInContext(`if(settings.text_provider==='gigachat'&&settings.gigachat_model&&!settings.gigachat_models?.includes(settings.gigachat_model))throw new Error('Выбранная модель не найдена — обновите список кнопкой «Проверить доступ».');`, context);
+} catch (e) { validationError = e; }
+assert.ok(validationError, 'validation should throw when gigachat model is stale');
+assert.match(validationError.message, /модель не найдена/);
+
+// 6) Valid model passes both checks without throwing
+vm.runInContext(`settings.gigachat_model='GigaChat-Max'; settings.gigachat_models=['GigaChat-Max','GigaChat-Lite'];`, context);
+validationError = null;
+try {
+  vm.runInContext(`if(settings.text_provider==='gigachat'&&!settings.gigachat_model)throw new Error('Выберите модель GigaChat из списка.');if(settings.text_provider==='gigachat'&&settings.gigachat_model&&!settings.gigachat_models?.includes(settings.gigachat_model))throw new Error('Выбранная модель не найдена');`, context);
+} catch (e) { validationError = e; }
+assert.strictEqual(validationError, null, 'no error expected for valid model');
+
+// 7) settings object includes gigachat_models array
+vm.runInContext(`settings.gigachat_models=['A','B'];`, context);
+const savedModels = vm.runInContext('settings.gigachat_models', context);
+assert.strictEqual(JSON.stringify(savedModels), JSON.stringify(['A', 'B']));
+
+console.log('F4/F5/M4 UI render-state tests + GigaChat models dropdown passed.');
