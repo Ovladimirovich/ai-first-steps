@@ -413,7 +413,11 @@ def _synthesize_piper_line(job: dict, ffmpeg: str, executable: str, model: Path,
         source_duration = wav_duration(wav_path)
         target_seconds = max(0.5, float(target_seconds))
         speed = source_duration / target_seconds
-        audio_filter = f"{_atempo_filter(speed)},apad,atrim=duration={target_seconds:.3f}"
+        # Cap speed-up at 1.3× to keep speech intelligible; extra time is absorbed by the pause
+        capped_speed = min(speed, 1.3)
+        # Actual output duration after atempo
+        out_duration = source_duration / capped_speed if capped_speed > 0 else target_seconds
+        audio_filter = f"{_atempo_filter(capped_speed)},apad,atrim=duration={out_duration:.3f}"
         convert = [ffmpeg, "-y", "-i", str(wav_path), "-vn", "-af", audio_filter,
                    "-ar", "44100", "-ac", "1", "-c:a", "libmp3lame", "-q:a", "2", str(output_mp3)]
         return_code, error_tail = _run_cancellable(job, convert)
