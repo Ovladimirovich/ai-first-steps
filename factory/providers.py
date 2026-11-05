@@ -202,7 +202,8 @@ def _gigachat_token(credentials: dict, force: bool = False) -> str:
             with urllib.request.urlopen(request, timeout=20, context=_giga_context(credentials)) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            raise ProviderError(f"Не удалось получить токен GigaChat (ошибка {exc.code}). Проверьте Client ID, секрет и выбранный доступ.") from exc
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise ProviderError(f"Не удалось получить токен GigaChat (ошибка {exc.code}). Проверьте Client ID, секрет и выбранный доступ. Ответ сервера: {detail}") from exc
         except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ssl.SSLError) as exc:
             raise ProviderError("Не удалось безопасно подключиться к авторизации GigaChat. Проверьте интернет и сертификат.") from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
