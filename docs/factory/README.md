@@ -1,6 +1,6 @@
 # Запуск AI Video Factory
 
-Приложение запускается локально на вашем компьютере и сохраняет проекты в `.factory/`. Основной план, статусы и следующие этапы: [дорожная карта](ROADMAP.md); архитектурные решения: [PLAN.md](PLAN.md). Для разработчиков: [F3 actions/queue и F4 review flow](f3-action-queue.md), [F5 visual prompts/variant history](f5-visual-variants.md).
+Приложение запускается локально на вашем компьютере и сохраняет проекты в `.factory/`. Основной план, статусы и следующие этапы: [дорожная карта](ROADMAP.md); архитектурные решения: [PLAN.md](PLAN.md). Рабочие инструкции: [инженер Arena](ARENA_ENGINEER_INSTRUCTIONS.md), [локальный инженер](LOCAL_ENGINEER_INSTRUCTIONS.md), [общий протокол](DEVELOPMENT_WORKFLOW.md); локальные результаты: [LOCAL_VALIDATION.md](LOCAL_VALIDATION.md). Для разработчиков: [F3 actions/queue и F4 review flow](f3-action-queue.md), [F5 visual prompts/variant history](f5-visual-variants.md).
 
 ## Первый запуск
 
