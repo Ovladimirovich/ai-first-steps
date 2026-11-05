@@ -6,7 +6,7 @@
 
 ## AI Video Factory (локальный прототип)
 
-В репозитории появился русскоязычный конвейер создания роликов поверх существующего FFmpeg-движка. Инструкция по запуску: [docs/factory/README.md](docs/factory/README.md), утверждённый план: [docs/factory/PLAN.md](docs/factory/PLAN.md). По умолчанию используется демо-сценарий и честно обозначенная тихая аудиозаглушка; для текста можно выбрать локальный llama.cpp или облачный GigaChat. Кадры рисуются прежним рендерером или загружаются для отдельной сцены, MP4 настоящий. Локальный запуск: `python -m factory --host 127.0.0.1` → `http://localhost:7860`.
+В репозитории развивается русскоязычная мастерская создания роликов поверх существующего FFmpeg-движка. Запуск: [docs/factory/README.md](docs/factory/README.md); актуальные статусы и следующий план: [docs/factory/ROADMAP.md](docs/factory/ROADMAP.md); архитектурные основания: [docs/factory/PLAN.md](docs/factory/PLAN.md). Демо-сценарий и тихая аудиозаглушка остаются безопасными настройками по умолчанию. Для текста доступны локальный llama.cpp и опциональный облачный GigaChat. Кадры сейчас рисуются прежним рендерером либо загружаются пользователем; генератор изображений и ComfyUI ещё не подключены. Локальный запуск: `python -m factory --host 127.0.0.1` → `http://localhost:7860`.
 
 > **Ветка `arena/750486c0-ai-first-steps` самодостаточна** — `main` не нужен. Клонируй её: `git clone --branch arena/750486c0-ai-first-steps https://github.com/Ovladimirovich/ai-first-steps.git`
 
