@@ -93,6 +93,14 @@ assert.match(html, /Проверить/);
 assert.match(html, /Тёплая мастерская &lt;уютно&gt;/);
 assert.match(html, /генераторы изображений пока не вызываются/);
 
+vm.runInContext(`project = { id: 'piper-ui-project', spec: { intent: { theme: 'Piper test', audience: { note: 'Зрители' }, target_duration_s: 30 }, heroes: [{ id: 'h1', name: 'Бит', role: 'explains' }, { id: 'h2', name: 'Маша', role: 'asks' }], look: { style_preset: 'warm_workshop' }, script: { scenes: [] } } }; currentStep = 0; settings = { text_provider: 'demo', llama_cpp_base_url: 'http://127.0.0.1:8081/v1', llama_cpp_model: '', gigachat_model: '', gigachat_cloud_ack: false, gigachat_credentials_configured: false, voice_provider: 'piper', piper_executable: 'piper', piper_model_h1: 'bit.onnx', piper_model_h2: 'masha.onnx' };`, context);
+html = vm.runInContext('renderIntent()', context);
+assert.match(html, /Озвучка · Piper/);
+assert.match(html, /id="voiceProvider"/);
+assert.match(html, /id="piperModelH1"/);
+assert.match(html, /id="piperModelH2"/);
+assert.match(html, /Piper · локальная речь/);
+
 vm.runInContext(`project = { id: 'subtitle-project', spec: { intent: { theme: 'Субтитры' }, heroes: [], script: { scenes: [] } } }; currentStep = 2; artifacts = { voice: 'ready', timing: { lines: [{ id: 'l1', text: 'Тестовая реплика', dur: 2.5 }] }, duration_s: 3 };`, context);
 html = vm.runInContext('renderVoice()', context);
 assert.match(html, /href="\/media\/subtitle-project\/subtitles\.srt"/);

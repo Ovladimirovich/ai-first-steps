@@ -189,11 +189,14 @@ def plan(project: dict, stage: str, kind: str | None = None) -> dict:
     if not spec.get("script", {}).get("scenes"):
         raise ValueError("Сначала подготовьте сценарий")
     if stage == "voice":
+        from .settings import load_settings
+        voice_provider = str(load_settings().get("voice_provider", "demo"))
         line_units = artifacts["voice_units"]
         total_units = line_units + 1
         units = _pending_voice_count(project) + int(artifacts["voice"] != "ready")
-        estimate = 1 if units == 0 else max(1, int(units * 0.25 + 1))
-        message = f"Обновятся {units} из {total_units} демо-дорожек/сведений · примерно {estimate} сек. Стоимость: 0 ₽."
+        estimate = 1 if units == 0 else max(1, int(units * (2.5 if voice_provider == "piper" else 0.25) + 1))
+        provider_label = "локальных дорожек Piper" if voice_provider == "piper" else "демо-дорожек (тишина)"
+        message = f"Обновятся {units} из {total_units} {provider_label}/сведений · примерно {estimate} сек. Стоимость: 0 ₽."
     elif stage == "frames":
         total_units = artifacts["scene_units"]
         units = _pending_frame_count(project)
@@ -324,9 +327,17 @@ def get_job(job_id: str, project_id: str | None = None) -> dict | None:
 
 set_executor(_execute_job)
 
-def _run_cancellable(job: dict, command: list[str], *, cwd: str | None = None) -> tuple[int, str]:
-    process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+def _run_cancellable(job: dict, command: list[str], *, cwd: str | None = None,
+                     stdin_text: str | None = None) -> tuple[int, str]:
+    process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE if stdin_text is not None else None,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                text=True, encoding="utf-8", errors="replace", bufsize=1)
+    if stdin_text is not None and process.stdin is not None:
+        try:
+            process.stdin.write(stdin_text)
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
     output: list[str] = []
     lines: queue.Queue[str | None] = queue.Queue()
 
@@ -373,19 +384,87 @@ def _run_cancellable(job: dict, command: list[str], *, cwd: str | None = None) -
         if process.stdout:
             process.stdout.close()
 
+def _atempo_filter(speed: float) -> str:
+    """Build ffmpeg atempo chain; each individual filter accepts speeds from 0.5 to 2."""
+    if speed <= 0:
+        raise ValueError("Некорректная длительность реплики Piper")
+    factors = []
+    while speed > 2.0:
+        factors.append(2.0)
+        speed /= 2.0
+    while speed < 0.5:
+        factors.append(0.5)
+        speed /= 0.5
+    factors.append(speed)
+    return ",".join(f"atempo={factor:.6f}" for factor in factors)
+
+
+def _synthesize_piper_line(job: dict, ffmpeg: str, executable: str, model: Path,
+                           text: str, target_seconds: float, wav_path: Path,
+                           output_mp3: Path) -> float:
+    from .voice import wav_duration
+    wav_path.unlink(missing_ok=True)
+    output_mp3.unlink(missing_ok=True)
+    command = [executable, "--model", str(model), "--output_file", str(wav_path)]
+    try:
+        return_code, error_tail = _run_cancellable(job, command, stdin_text=text.strip() + "\n")
+        if return_code or not wav_path.is_file():
+            raise RuntimeError("Piper не синтезировал реплику: " + (error_tail[-500:] or "WAV-файл отсутствует"))
+        source_duration = wav_duration(wav_path)
+        target_seconds = max(0.5, float(target_seconds))
+        speed = source_duration / target_seconds
+        audio_filter = f"{_atempo_filter(speed)},apad,atrim=duration={target_seconds:.3f}"
+        convert = [ffmpeg, "-y", "-i", str(wav_path), "-vn", "-af", audio_filter,
+                   "-ar", "44100", "-ac", "1", "-c:a", "libmp3lame", "-q:a", "2", str(output_mp3)]
+        return_code, error_tail = _run_cancellable(job, convert)
+        if return_code or not output_mp3.is_file():
+            raise RuntimeError("Не удалось привести Piper-аудио к таймингу проекта: " + error_tail[-500:])
+        return source_duration
+    finally:
+        wav_path.unlink(missing_ok=True)
+        if not output_mp3.is_file():
+            output_mp3.unlink(missing_ok=True)
+
+
+def _mix_piper_voice_track(job: dict, ffmpeg: str, rows: list[dict], audio_dir: Path,
+                           output: Path, total_seconds: float) -> None:
+    inputs = []
+    filters = []
+    for index, row in enumerate(rows):
+        source = audio_dir / f"{row['id']}.mp3"
+        if not source.is_file():
+            raise RuntimeError(f"Не найдено Piper-аудио для реплики {row['id']}")
+        inputs.extend(["-i", str(source)])
+        delay_ms = max(0, int(round(float(row["start"]) * 1000)))
+        filters.append(f"[{index}:a]aresample=44100,aformat=channel_layouts=stereo,adelay={delay_ms}|{delay_ms}[a{index}]")
+    labels = "".join(f"[a{index}]" for index in range(len(rows)))
+    filters.append(f"{labels}amix=inputs={len(rows)}:duration=longest:normalize=0,"
+                   f"alimiter=limit=0.95,apad,atrim=duration={total_seconds:.3f}[voice]")
+    command = [ffmpeg, "-y", *inputs, "-filter_complex", ";".join(filters), "-map", "[voice]",
+               "-t", f"{total_seconds:.3f}", "-c:a", "libmp3lame", "-q:a", "2", str(output)]
+    return_code, error_tail = _run_cancellable(job, command)
+    if return_code or not output.is_file():
+        output.unlink(missing_ok=True)
+        raise RuntimeError("Не удалось свести локальную Piper-озвучку: " + error_tail[-500:])
+
+
 def _make_voice(project: dict, job: dict) -> None:
     import imageio_ffmpeg
+    from .settings import load_settings
+    from .voice import piper_model_path, resolve_piper_executable
+
     root = project_dir(project["id"])
     audio_dir = root / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     data = renderer_timing(project["spec"])
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-    root = project_dir(project["id"])
+    settings = load_settings()
+    voice_provider = str(settings.get("voice_provider", "demo"))
+    if voice_provider not in ("demo", "piper"):
+        raise ValueError("Неизвестный поставщик голоса. Выберите демо или локальный Piper.")
+    piper_executable = resolve_piper_executable(settings) if voice_provider == "piper" else ""
     cache_path = root / "voice-cache.json"
-    try:
-        line_cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        line_cache = {}
+    line_cache = _read_cache(cache_path)
     line_specs = {line["id"]: line for scene in project["spec"]["script"]["scenes"] for line in scene["lines"]}
     fingerprint_data = project_fingerprints(project)
     native_v2 = int(project.get("schema_version", 1)) >= 2
@@ -403,12 +482,19 @@ def _make_voice(project: dict, job: dict) -> None:
             _atomic_copy(immutable_file, output)
         if not reused:
             generated = audio_dir / f".{row['id']}-{job['id']}.partial.mp3"
-            return_code, error_tail = _run_cancellable(job, [ffmpeg, "-y", "-f", "lavfi", "-i",
-                "anullsrc=channel_layout=mono:sample_rate=44100", "-t", f"{duration:.3f}",
-                "-q:a", "9", "-acodec", "libmp3lame", str(generated)])
-            if return_code:
-                generated.unlink(missing_ok=True)
-                raise RuntimeError("Не удалось подготовить демо-аудио: " + error_tail[-500:])
+            source_duration = None
+            if voice_provider == "piper":
+                model = piper_model_path(settings, str(line.get("hero", "")))
+                wav_path = audio_dir / f".{row['id']}-{job['id']}.piper.wav"
+                source_duration = _synthesize_piper_line(job, ffmpeg, piper_executable, model,
+                                                         str(line["text"]), duration, wav_path, generated)
+            else:
+                return_code, error_tail = _run_cancellable(job, [ffmpeg, "-y", "-f", "lavfi", "-i",
+                    "anullsrc=channel_layout=mono:sample_rate=44100", "-t", f"{duration:.3f}",
+                    "-q:a", "9", "-acodec", "libmp3lame", str(generated)])
+                if return_code:
+                    generated.unlink(missing_ok=True)
+                    raise RuntimeError("Не удалось подготовить демо-аудио: " + error_tail[-500:])
             if native_v2:
                 record = register_asset_file(project["id"], generated, asset_type="dialogue_audio",
                                              target={"line_id": str(row["id"])}, extension=".mp3",
@@ -418,11 +504,12 @@ def _make_voice(project: dict, job: dict) -> None:
                 generated.unlink(missing_ok=True)
                 line_cache[row["id"]] = {"fingerprint": key, "dependencies": entry["dependencies"],
                                           "asset_id": record["asset_id"], "asset_version": record["asset_version"],
-                                          "file": record["path"]}
+                                          "file": record["path"], "source_duration_s": source_duration}
             else:
                 _atomic_copy(generated, output)
                 generated.unlink(missing_ok=True)
-                line_cache[row["id"]] = {"fingerprint": key, "dependencies": entry["dependencies"]}
+                line_cache[row["id"]] = {"fingerprint": key, "dependencies": entry["dependencies"],
+                                          "source_duration_s": source_duration}
         action = "использую прежнюю" if reused else "создана"
         _append(job, f"Дорожка {index}/{len(data['lines'])}: {action}", int(index / max(1, len(data["lines"])) * 65))
         atomic_write_json(cache_path, line_cache)
@@ -446,12 +533,15 @@ def _make_voice(project: dict, job: dict) -> None:
     if mix_record is None:
         generated_track = audio_dir / f".voice-track-{job['id']}.partial.mp3"
         total = max(0.5, float(data["total"]))
-        return_code, error_tail = _run_cancellable(job, [ffmpeg, "-y", "-f", "lavfi", "-i",
-            "anullsrc=channel_layout=stereo:sample_rate=44100", "-t", f"{total:.3f}",
-            "-q:a", "9", "-acodec", "libmp3lame", str(generated_track)])
-        if return_code:
-            generated_track.unlink(missing_ok=True)
-            raise RuntimeError("Не удалось свести демо-аудио: " + error_tail[-500:])
+        if voice_provider == "piper":
+            _mix_piper_voice_track(job, ffmpeg, data["lines"], audio_dir, generated_track, total)
+        else:
+            return_code, error_tail = _run_cancellable(job, [ffmpeg, "-y", "-f", "lavfi", "-i",
+                "anullsrc=channel_layout=stereo:sample_rate=44100", "-t", f"{total:.3f}",
+                "-q:a", "9", "-acodec", "libmp3lame", str(generated_track)])
+            if return_code:
+                generated_track.unlink(missing_ok=True)
+                raise RuntimeError("Не удалось свести демо-аудио: " + error_tail[-500:])
         if native_v2:
             mix_record = register_asset_file(project["id"], generated_track, asset_type="dialogue_mix",
                                              target={"mix": "voice_track"}, extension=".mp3",
@@ -461,7 +551,7 @@ def _make_voice(project: dict, job: dict) -> None:
         else:
             generated_track.replace(track)
     atomic_write_json(root / "timing.json", data)
-    # A lightweight SRT matching the same timeline.
+    # Speech is fitted to the established per-line timing, so the SRT and renderer stay aligned.
     def stamp(seconds):
         ms = int(round(seconds * 1000)); h, ms = divmod(ms, 3600000); m, ms = divmod(ms, 60000); s, ms = divmod(ms, 1000)
         return f"{h:02}:{m:02}:{s:02},{ms:03}"
@@ -472,12 +562,13 @@ def _make_voice(project: dict, job: dict) -> None:
                   "fingerprint_version": voice_state["fingerprint_version"],
                   "dependencies": {"timing": fingerprint_data["components"]["timing"],
                                    "line_fingerprints": {key: value["fingerprint"] for key, value in fingerprint_data["voice_lines"].items()}},
-                  "demo": True}
+                  "demo": voice_provider == "demo", "provider": voice_provider}
     if mix_record:
         voice_meta.update({"asset_id": mix_record["asset_id"], "asset_version": mix_record["asset_version"],
                            "path": mix_record["path"], "sha256": mix_record["sha256"]})
     atomic_write_json(root / "voice.meta.json", voice_meta)
-    _append(job, "Демо-озвучка готова. Это тишина с длительностью по тексту, не настоящий голос.", 95)
+    message = "Piper-озвучка готова. Речь обработана локально и подогнана под тайминг проекта." if voice_provider == "piper" else "Демо-озвучка готова. Это тишина с длительностью по тексту, не настоящий голос."
+    _append(job, message, 95)
 
 def _make_frames(project: dict, job: dict) -> None:
     from PIL import Image

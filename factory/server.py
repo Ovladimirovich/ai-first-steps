@@ -24,6 +24,7 @@ from .action_service import (apply_action, confirm_action, get_candidate, propos
 from .jobs import cancel_job, list_jobs, recover_jobs
 from .providers import ProviderError, test_connection, test_gigachat_connection
 from .settings import gigachat_credentials, load_settings, save_settings
+from .voice import test_piper_settings
 from .visuals import (create_visual_variant, deselect_visual_variant, list_visual_variants,
                       reject_visual_variant, review_visual_variant, select_visual_variant,
                       update_visual_prompt)
@@ -223,6 +224,11 @@ class Handler(BaseHTTPRequestHandler):
                 project = create_project(body)
                 return self._json(201, project)
             parts = path.strip("/").split("/")
+            if path == "/api/settings/voice/test":
+                settings = load_settings()
+                if settings.get("voice_provider") != "piper":
+                    return self._error("Сначала выберите Piper в настройках озвучки.")
+                return self._json(200, test_piper_settings(settings))
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "visual-variants":
                 scene_id = str(body.get("scene_id", ""))
                 data_url = str(body.get("data_url", ""))
