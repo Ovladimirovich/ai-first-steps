@@ -5,7 +5,11 @@ import stat
 import sys
 import tempfile
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from urllib.error import HTTPError
+from urllib.request import urlopen
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 from factory.core import create_project, draft_script, load_project, project_dir, save_project
 from factory.pipeline import _atempo_filter, _make_voice
 from factory.settings import save_settings
+from factory.server import Handler
 from factory.voice import VoiceProviderError, check_piper_settings
 
 
@@ -37,6 +42,29 @@ with wave.open(args.output_file, 'wb') as audio:
 
 
 class PiperVoiceTests(unittest.TestCase):
+    def test_local_sample_route_serves_only_saved_voice_previews(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample_dir = root / "voice-tests"
+            sample_dir.mkdir()
+            sample = b"preview wav bytes"
+            (sample_dir / "h1.wav").write_bytes(sample)
+            with patch("factory.server.SETTINGS_PATH", root / "settings.json"):
+                server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+                thread = Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    base = f"http://127.0.0.1:{server.server_port}"
+                    with urlopen(base + "/api/settings/voice/samples/h1.wav") as response:
+                        self.assertEqual(response.read(), sample)
+                        self.assertTrue(response.headers["Content-Type"].startswith("audio/"))
+                    with self.assertRaises(HTTPError):
+                        urlopen(base + "/api/settings/voice/samples/other.wav")
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
+
     def _fake_models(self, root: Path):
         models = {}
         for hero in ("h1", "h2"):
@@ -62,10 +90,14 @@ class PiperVoiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             models = self._fake_models(root)
-            result = check_piper_settings({"piper_executable": str(self._fake_executable(root)), **models})
-        self.assertTrue(result["connected"])
-        self.assertEqual(set(result["voices"]), {"h1", "h2"})
-        self.assertGreater(result["voices"]["h1"]["sample_duration_s"], 0)
+            sample_dir = root / "voice-tests"
+            result = check_piper_settings({"piper_executable": str(self._fake_executable(root)), **models}, sample_dir)
+            self.assertTrue(result["connected"])
+            self.assertEqual(set(result["voices"]), {"h1", "h2"})
+            self.assertGreater(result["voices"]["h1"]["sample_duration_s"], 0)
+            for hero in ("h1", "h2"):
+                self.assertTrue((sample_dir / f"{hero}.wav").is_file())
+                self.assertEqual(result["voices"][hero]["sample_url"], f"/api/settings/voice/samples/{hero}.wav")
 
     def test_piper_settings_reject_missing_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -100,6 +100,9 @@ assert.match(html, /id="voiceProvider"/);
 assert.match(html, /id="piperModelH1"/);
 assert.match(html, /id="piperModelH2"/);
 assert.match(html, /Piper · локальная речь/);
+assert.match(html, /id="piperPreview"/);
+assert.match(html, /короткие локальные пробы/);
+assert.match(source, /audio controls preload="metadata" src="\$\{esc\(voice\.sample_url\)\}"/);
 
 vm.runInContext(`project = { id: 'subtitle-project', spec: { intent: { theme: 'Субтитры' }, heroes: [], script: { scenes: [] } } }; currentStep = 2; artifacts = { voice: 'ready', timing: { lines: [{ id: 'l1', text: 'Тестовая реплика', dur: 2.5 }] }, duration_s: 3 };`, context);
 html = vm.runInContext('renderVoice()', context);

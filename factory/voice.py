@@ -51,17 +51,20 @@ def wav_duration(path: Path) -> float:
         raise VoiceProviderError(f"Piper не создал корректный WAV-файл: {path.name}") from exc
 
 
-def check_piper_settings(settings: dict) -> dict:
-    """Synthesize a short local sample for each configured default hero voice."""
+def check_piper_settings(settings: dict, sample_dir: Path | None = None) -> dict:
+    """Synthesize short local voice samples, optionally retaining them for in-browser playback."""
     executable = resolve_piper_executable(settings)
-    voices = {}
     models = {hero_id: piper_model_path(settings, hero_id) for hero_id in ("h1", "h2")}
-    for hero_id, model in models.items():
-        with tempfile.TemporaryDirectory(prefix="factory-piper-test-") as tmp:
-            output = Path(tmp) / "sample.wav"
+    voices = {}
+    generated = {}
+    with tempfile.TemporaryDirectory(prefix="factory-piper-test-") as tmp:
+        temp_root = Path(tmp)
+        for hero_id, model in models.items():
+            output = temp_root / f"{hero_id}.wav"
             command = [executable, "--model", str(model), "--output_file", str(output)]
             try:
-                result = subprocess.run(command, input="Проверка локального голоса.\n", text=True,
+                result = subprocess.run(command, input="Привет! Это проверка голоса. Я говорю по-русски: шесть, ёжик, яркое солнце.\n",
+                                        text=True, encoding="utf-8", errors="replace",
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         timeout=45, check=False)
             except (OSError, subprocess.TimeoutExpired) as exc:
@@ -71,6 +74,13 @@ def check_piper_settings(settings: dict) -> dict:
                 raise VoiceProviderError(f"Piper не синтезировал тестовую реплику для {hero_id}. {detail}")
             duration = wav_duration(output)
             voices[hero_id] = {"model": model.name, "sample_duration_s": round(duration, 2)}
+            generated[hero_id] = output
+        if sample_dir is not None:
+            sample_dir = Path(sample_dir).resolve()
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            for hero_id, output in generated.items():
+                (sample_dir / f"{hero_id}.wav").write_bytes(output.read_bytes())
+                voices[hero_id]["sample_url"] = f"/api/settings/voice/samples/{hero_id}.wav"
     return {"connected": True, "provider": "piper", "executable": executable, "voices": voices}
 
 

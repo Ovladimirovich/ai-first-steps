@@ -23,7 +23,7 @@ from .action_service import (apply_action, confirm_action, get_candidate, propos
                              reject_action, retry_action_job)
 from .jobs import cancel_job, list_jobs, recover_jobs
 from .providers import ProviderError, test_connection, check_gigachat_connection
-from .settings import gigachat_credentials, load_settings, save_settings
+from .settings import SETTINGS_PATH, gigachat_credentials, load_settings, save_settings
 from .voice import check_piper_settings
 from .visuals import (create_visual_variant, deselect_visual_variant, list_visual_variants,
                       reject_visual_variant, review_visual_variant, select_visual_variant,
@@ -97,6 +97,15 @@ class Handler(BaseHTTPRequestHandler):
             candidate = (project_dir(bits[2]) / Path(*bits[3:])).resolve()
             base = project_dir(bits[2]).resolve()
             if base not in candidate.parents:
+                return self.send_error(404)
+            return self._file(candidate)
+        if path.startswith("/api/settings/voice/samples/"):
+            sample = path.removeprefix("/api/settings/voice/samples/")
+            if sample not in ("h1.wav", "h2.wav"):
+                return self.send_error(404)
+            sample_dir = (SETTINGS_PATH.parent / "voice-tests").resolve()
+            candidate = (sample_dir / sample).resolve()
+            if sample_dir not in candidate.parents:
                 return self.send_error(404)
             return self._file(candidate)
         if path == "/api/settings":
@@ -228,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
                 settings = load_settings()
                 if settings.get("voice_provider") != "piper":
                     return self._error("Сначала выберите Piper в настройках озвучки.")
-                return self._json(200, check_piper_settings(settings))
+                return self._json(200, check_piper_settings(settings, SETTINGS_PATH.parent / "voice-tests"))
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "visual-variants":
                 scene_id = str(body.get("scene_id", ""))
                 data_url = str(body.get("data_url", ""))
