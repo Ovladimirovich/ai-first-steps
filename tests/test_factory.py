@@ -99,6 +99,28 @@ class FactoryTimingTests(unittest.TestCase):
         self.assertEqual(call.call_args_list[0].args[0], "/models")
         self.assertEqual(call.call_args_list[1].args[0], "/chat/completions")
 
+    def test_gigachat_malformed_json_gets_one_repair_attempt(self):
+        spec = new_spec("Почему небо голубое?", duration=30)
+        scenes = {"scenes": [
+            {"title": "Вопрос", "purpose": "hook", "lines": [{"hero": "h2", "text": "Откуда берётся небо?"}]},
+            {"title": "Свет", "purpose": "point", "lines": [{"hero": "h1", "text": "Солнечный свет складывается из цветов."}]},
+            {"title": "Вывод", "purpose": "payoff", "lines": [{"hero": "h2", "text": "Теперь я знаю, как он появляется."}]},
+        ]}
+        good = {"choices": [{"message": {"content": json.dumps(scenes, ensure_ascii=False)}}]}
+        with patch("factory.providers._gigachat_api", side_effect=[
+            {"data": [{"id": "GigaChat"}]},
+            {"choices": [{"message": {"content": "{bad json"}}]},
+            good,
+        ]) as call:
+            result = draft_with_gigachat(spec, {"gigachat_model": ""}, {"client_id": "x", "client_secret": "y"})
+        self.assertEqual(result["script"]["generator"]["provider"], "gigachat")
+        self.assertEqual(len(result["script"]["scenes"]), 3)
+        self.assertEqual(call.call_args_list[0].args[0], "/models")
+        self.assertEqual(call.call_args_list[1].args[0], "/chat/completions")
+        self.assertEqual(call.call_args_list[2].args[0], "/chat/completions")
+        repair_payload = call.call_args_list[2].args[2]
+        self.assertEqual(repair_payload["temperature"], 0.1)
+
     def test_gigachat_requires_credentials(self):
         with self.assertRaisesRegex(ProviderError, "GIGACHAT_CLIENT_ID"):
             check_gigachat_connection({"client_id": "", "client_secret": ""})

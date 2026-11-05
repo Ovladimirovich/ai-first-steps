@@ -309,8 +309,9 @@ def draft_with_gigachat(spec: dict, settings: dict, credentials: dict) -> dict:
     model = str(settings.get("gigachat_model", "")).strip()
     if not model:
         model = _model_from_list(_gigachat_api("/models", credentials, timeout=20), "GigaChat")
+    system = "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."
     payload = {"model": model, "messages": [
-        {"role": "system", "content": "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ], "temperature": 0.55, "max_tokens": 3200}
     response = _gigachat_api("/chat/completions", credentials, payload, timeout=180)
@@ -318,5 +319,27 @@ def draft_with_gigachat(spec: dict, settings: dict, credentials: dict) -> dict:
         content = response["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ProviderError("GigaChat не вернул текст сценария") from exc
-    data = _json_object(content if isinstance(content, str) else str(content))
+    content = content if isinstance(content, str) else str(content)
+    try:
+        data = _json_object(content)
+    except ProviderError:
+        # One private, local repair pass follows the approved plan for malformed model JSON.
+        repair = {**payload, "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": content[:16000]},
+            {"role": "user", "content": "Исправь предыдущий ответ. Верни только один корректный JSON-объект по указанной форме; сохрани смысл сценария и не добавляй Markdown."},
+        ], "temperature": 0.1}
+        try:
+            repair_response = _gigachat_api("/chat/completions", credentials, repair, timeout=180)
+        except ProviderError:
+            raise
+        try:
+            content2 = repair_response["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError("GigaChat не вернул текст сценария при попытке исправить черновик") from exc
+        try:
+            data = _json_object(content2 if isinstance(content2, str) else str(content2))
+        except ProviderError as exc:
+            raise ProviderError("GigaChat дважды вернула сценарий в некорректном формате. Попробуйте ещё раз или выберите демо-шаблон.") from exc
     return _normalize_scenario(spec, data, "gigachat", model)
