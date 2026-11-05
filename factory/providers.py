@@ -234,7 +234,7 @@ def _gigachat_api(path: str, credentials: dict, body: dict | None = None, timeou
     raise ProviderError("Не удалось авторизоваться в GigaChat")
 
 
-def test_gigachat_connection(credentials: dict) -> dict:
+def check_gigachat_connection(credentials: dict) -> dict:
     started = time.monotonic()
     result = _gigachat_api("/models", credentials, timeout=15)
     models = result.get("data", [])

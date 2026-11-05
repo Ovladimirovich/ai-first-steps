@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from factory.core import draft_script, new_spec
 from factory.pipeline import _pending_scene_count, _segment_key, plan, run
-from factory.providers import ProviderError, _base_url, draft_with_gigachat, draft_with_llama, test_gigachat_connection
+from factory.providers import ProviderError, _base_url, draft_with_gigachat, draft_with_llama, check_gigachat_connection
 from factory.timing import timing_for
 
 
@@ -101,7 +101,7 @@ class FactoryTimingTests(unittest.TestCase):
 
     def test_gigachat_requires_credentials(self):
         with self.assertRaisesRegex(ProviderError, "GIGACHAT_CLIENT_ID"):
-            test_gigachat_connection({"client_id": "", "client_secret": ""})
+            check_gigachat_connection({"client_id": "", "client_secret": ""})
 
     def test_llama_endpoint_is_local_and_normalized(self):
         self.assertEqual(_base_url("http://127.0.0.1:8081"), "http://127.0.0.1:8081/v1")

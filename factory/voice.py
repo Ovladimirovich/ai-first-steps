@@ -51,7 +51,7 @@ def wav_duration(path: Path) -> float:
         raise VoiceProviderError(f"Piper не создал корректный WAV-файл: {path.name}") from exc
 
 
-def test_piper_settings(settings: dict) -> dict:
+def check_piper_settings(settings: dict) -> dict:
     """Synthesize a short local sample for each configured default hero voice."""
     executable = resolve_piper_executable(settings)
     voices = {}

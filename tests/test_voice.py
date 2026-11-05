@@ -1,5 +1,6 @@
 import json
 import importlib.util
+import os
 import stat
 import sys
 import tempfile
@@ -13,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 from factory.core import create_project, draft_script, load_project, project_dir, save_project
 from factory.pipeline import _atempo_filter, _make_voice
 from factory.settings import save_settings
-from factory.voice import VoiceProviderError, test_piper_settings
+from factory.voice import VoiceProviderError, check_piper_settings
 
 
 FAKE_PIPER = r'''#!/usr/bin/env python3
@@ -48,14 +49,20 @@ class PiperVoiceTests(unittest.TestCase):
     def _fake_executable(self, root: Path) -> Path:
         executable = root / "fake-piper"
         executable.write_text(FAKE_PIPER, encoding="utf-8")
-        executable.chmod(executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        if os.name == "nt":
+            # On Windows, wrap the Python script in a .bat launcher
+            bat = root / "fake-piper.bat"
+            bat.write_text(f'@echo off\n{sys.executable} "{executable}" %*\n', encoding="utf-8")
+            executable = bat
+        else:
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         return executable
 
     def test_piper_settings_synthesize_local_samples_for_both_voices(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             models = self._fake_models(root)
-            result = test_piper_settings({"piper_executable": str(self._fake_executable(root)), **models})
+            result = check_piper_settings({"piper_executable": str(self._fake_executable(root)), **models})
         self.assertTrue(result["connected"])
         self.assertEqual(set(result["voices"]), {"h1", "h2"})
         self.assertGreater(result["voices"]["h1"]["sample_duration_s"], 0)
@@ -66,7 +73,7 @@ class PiperVoiceTests(unittest.TestCase):
             model = root / "h1.onnx"
             model.write_bytes(b"model")
             with self.assertRaisesRegex(VoiceProviderError, "файл настроек"):
-                test_piper_settings({"piper_executable": str(self._fake_executable(root)),
+                check_piper_settings({"piper_executable": str(self._fake_executable(root)),
                                      "piper_model_h1": str(model), "piper_model_h2": str(model)})
 
     @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg"), "optional renderer dependency imageio-ffmpeg is not installed")
