@@ -1,7 +1,5 @@
 @echo off
-rem ==========================================
-rem Запуск приложения AI Video Factory
-rem ==========================================
+setlocal
 
 echo.
 echo ==========================================
@@ -9,25 +7,27 @@ echo Запуск приложения AI Video Factory
 echo ==========================================
 echo.
 
-rem Переходим в директорию проекта
-cd /d "C:\Projects_arena\ai-first-steps"
+where powershell.exe >nul 2>&1
+if errorlevel 1 (
+    echo Ошибка: не найден Windows PowerShell.
+    goto :failed
+)
 
-rem Запуск сервера в отдельном окне (через __main__, т.к. server.py не имеет точки входа)
-start "" cmd /k "python -m factory.__main__"
-echo Сервер запущен в отдельном окне
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0factory-server.ps1" start
+if errorlevel 1 goto :failed
 
-rem Даем серверу время на инициализацию
-timeout /t 5 /nobreak > nul
-
-rem Открываем браузер (сервер запущен на порту 7860)
-echo Открытие браузера...
 start "" "http://localhost:7860"
-
 echo.
-echo === Информация ===
-echo Приложение открыто в браузере по адресу: http://localhost:7860
-echo Лог сервера смотрите в отдельном окне консоли сервера
-echo.
-echo Для остановки сервера запустите stop.bat
+echo Приложение открыто в браузере: http://localhost:7860
+echo Сервер слушает только этот компьютер; окно сервера содержит журнал.
+echo Для остановки используйте stop.bat.
 echo.
 pause
+exit /b 0
+
+:failed
+echo.
+echo Не удалось запустить сервер. Проверьте Python и сообщение выше.
+echo.
+pause
+exit /b 1

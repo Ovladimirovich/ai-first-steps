@@ -166,6 +166,10 @@ def project_fingerprints(project: dict, *, story: dict | None = None,
 
     legacy = v2_to_v1(story, production, manifest)
     timing = timing_for(legacy)
+    from .settings import load_settings
+    runtime_voice_settings = load_settings()
+    voice_provider = str(runtime_voice_settings.get("voice_provider", "demo"))
+    voice_engine_version = "factory-piper-cli-v1" if voice_provider == "piper" else VOICE_ENGINE_VERSION
     scenes = sorted(story.get("script", {}).get("scenes", []), key=lambda item: item.get("order", 0))
     legacy_scenes = {str(scene.get("id")): scene for scene in legacy.get("script", {}).get("scenes", [])}
     heroes = {str(hero.get("id")): hero for hero in story.get("heroes", [])}
@@ -202,17 +206,24 @@ def project_fingerprints(project: dict, *, story: dict | None = None,
             hero_voice = hero_voices.get(hero_id, {})
             delivery = dialogue.get(line_id, {})
             row = timing_by_line.get(line_id, {})
+            provider_generation = {
+                "voice_generation": production.get("voice_generation", production.get("tts", {})),
+                "models": production.get("models", {}),
+                "providers": production.get("providers", {}),
+                "voice_prompt_template": production.get("voice_prompt_template", ""),
+            }
+            if voice_provider == "piper":
+                from .voice import executable_signature, model_signature
+                provider_generation["runtime_voice"] = {
+                    "provider": "piper", "executable": executable_signature(runtime_voice_settings),
+                    "model": model_signature(runtime_voice_settings, hero_id),
+                }
             dependencies = _dep_hashes(
                 line_content={"line_id": line_id, "text": line.get("text", ""), "hero_id": hero_id},
                 voice_selection=hero_voice,
                 line_delivery=delivery,
-                provider_model_and_generation={
-                    "voice_generation": production.get("voice_generation", production.get("tts", {})),
-                    "models": production.get("models", {}),
-                    "providers": production.get("providers", {}),
-                    "voice_prompt_template": production.get("voice_prompt_template", ""),
-                },
-                duration_and_parameters={"duration_s": row.get("dur"), "engine": VOICE_ENGINE_VERSION},
+                provider_model_and_generation=provider_generation,
+                duration_and_parameters={"duration_s": row.get("dur"), "engine": voice_engine_version},
             )
             voice_lines[line_id] = {"fingerprint": _combine(dependencies), "dependencies": dependencies}
 

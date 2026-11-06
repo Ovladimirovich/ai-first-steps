@@ -202,7 +202,8 @@ def _gigachat_token(credentials: dict, force: bool = False) -> str:
             with urllib.request.urlopen(request, timeout=20, context=_giga_context(credentials)) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            raise ProviderError(f"Не удалось получить токен GigaChat (ошибка {exc.code}). Проверьте Client ID, секрет и выбранный доступ.") from exc
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise ProviderError(f"Не удалось получить токен GigaChat (ошибка {exc.code}). Проверьте Client ID, секрет и выбранный доступ. Ответ сервера: {detail}") from exc
         except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ssl.SSLError) as exc:
             raise ProviderError("Не удалось безопасно подключиться к авторизации GigaChat. Проверьте интернет и сертификат.") from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -233,7 +234,7 @@ def _gigachat_api(path: str, credentials: dict, body: dict | None = None, timeou
     raise ProviderError("Не удалось авторизоваться в GigaChat")
 
 
-def test_gigachat_connection(credentials: dict) -> dict:
+def check_gigachat_connection(credentials: dict) -> dict:
     started = time.monotonic()
     result = _gigachat_api("/models", credentials, timeout=15)
     models = result.get("data", [])
@@ -249,6 +250,27 @@ def _model_from_list(result: dict, fallback: str) -> str:
     return fallback
 
 
+def _llama_completion(base: str, payload: dict) -> dict:
+    try:
+        return _request_json(base + "/chat/completions", payload, timeout=240)
+    except ProviderError as exc:
+        # Older llama.cpp builds may not implement OpenAI's response_format option.
+        message = str(exc).casefold()
+        if "response_format" not in message:
+            raise
+        compatible_payload = {**payload, "messages": list(payload["messages"])}
+        compatible_payload.pop("response_format", None)
+        return _request_json(base + "/chat/completions", compatible_payload, timeout=240)
+
+
+def _llama_content(response: dict) -> str:
+    try:
+        content = response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ProviderError("Помощник не вернул текст сценария") from exc
+    return content if isinstance(content, str) else str(content)
+
+
 def draft_with_llama(spec: dict, settings: dict) -> dict:
     base = _base_url(settings.get("llama_cpp_base_url", "http://127.0.0.1:8081/v1"))
     model = str(settings.get("llama_cpp_model", "")).strip()
@@ -258,16 +280,27 @@ def draft_with_llama(spec: dict, settings: dict) -> dict:
         except ProviderError:
             model = "local"
     prompt, _, _ = _scenario_prompt(spec)
+    system = "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."
     payload = {"model": model, "messages": [
-        {"role": "system", "content": "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
-    ], "temperature": 0.55, "max_tokens": 3200}
-    response = _request_json(base + "/chat/completions", payload, timeout=240)
+    ], "temperature": 0.55, "max_tokens": 3200,
+        "response_format": {"type": "json_object"}}
+    content = _llama_content(_llama_completion(base, payload))
     try:
-        content = response["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ProviderError("Помощник не вернул текст сценария") from exc
-    data = _json_object(content if isinstance(content, str) else str(content))
+        data = _json_object(content)
+    except ProviderError:
+        # One private, local repair pass follows the approved plan for malformed model JSON.
+        repair = {**payload, "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": content[:16000]},
+            {"role": "user", "content": "Исправь предыдущий ответ. Верни только один корректный JSON-объект по указанной форме; сохрани смысл сценария и не добавляй Markdown."},
+        ], "temperature": 0.1}
+        try:
+            data = _json_object(_llama_content(_llama_completion(base, repair)))
+        except ProviderError as exc:
+            raise ProviderError("Локальная модель дважды вернула сценарий в некорректном формате. Попробуйте ещё раз или выберите демо-шаблон.") from exc
     return _normalize_scenario(spec, data, "llama_cpp", model)
 
 
@@ -276,8 +309,9 @@ def draft_with_gigachat(spec: dict, settings: dict, credentials: dict) -> dict:
     model = str(settings.get("gigachat_model", "")).strip()
     if not model:
         model = _model_from_list(_gigachat_api("/models", credentials, timeout=20), "GigaChat")
+    system = "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."
     payload = {"model": model, "messages": [
-        {"role": "system", "content": "Ты бережный редактор коротких образовательных видео для детей. Следуй формату JSON строго."},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ], "temperature": 0.55, "max_tokens": 3200}
     response = _gigachat_api("/chat/completions", credentials, payload, timeout=180)
@@ -285,5 +319,27 @@ def draft_with_gigachat(spec: dict, settings: dict, credentials: dict) -> dict:
         content = response["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ProviderError("GigaChat не вернул текст сценария") from exc
-    data = _json_object(content if isinstance(content, str) else str(content))
+    content = content if isinstance(content, str) else str(content)
+    try:
+        data = _json_object(content)
+    except ProviderError:
+        # One private, local repair pass follows the approved plan for malformed model JSON.
+        repair = {**payload, "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": content[:16000]},
+            {"role": "user", "content": "Исправь предыдущий ответ. Верни только один корректный JSON-объект по указанной форме; сохрани смысл сценария и не добавляй Markdown."},
+        ], "temperature": 0.1}
+        try:
+            repair_response = _gigachat_api("/chat/completions", credentials, repair, timeout=180)
+        except ProviderError:
+            raise
+        try:
+            content2 = repair_response["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError("GigaChat не вернул текст сценария при попытке исправить черновик") from exc
+        try:
+            data = _json_object(content2 if isinstance(content2, str) else str(content2))
+        except ProviderError as exc:
+            raise ProviderError("GigaChat дважды вернула сценарий в некорректном формате. Попробуйте ещё раз или выберите демо-шаблон.") from exc
     return _normalize_scenario(spec, data, "gigachat", model)
