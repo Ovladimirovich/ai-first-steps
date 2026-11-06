@@ -17,6 +17,7 @@ DEFAULT_SETTINGS = {
     "piper_model_h1": "",
     "piper_model_h2": "",
     "gigachat_models": [],
+    "comfyui_base_url": "http://127.0.0.1:8188",
 }
 SETTINGS_PATH = ROOT / ".factory" / "settings.json"
 ENV_PATH = ROOT / ".env"
@@ -65,6 +66,7 @@ def load_settings() -> dict:
     result["piper_executable"] = env.get("PIPER_EXECUTABLE", result["piper_executable"])
     result["piper_model_h1"] = env.get("PIPER_MODEL_H1", result["piper_model_h1"])
     result["piper_model_h2"] = env.get("PIPER_MODEL_H2", result["piper_model_h2"])
+    result["comfyui_base_url"] = env.get("COMFYUI_BASE_URL", result["comfyui_base_url"])
     result["gigachat_credentials_configured"] = bool(env.get("GIGACHAT_CLIENT_ID") and env.get("GIGACHAT_CLIENT_SECRET"))
     return result
 
@@ -84,10 +86,12 @@ def save_settings(value: dict) -> dict:
     piper_executable = str(value.get("piper_executable", current["piper_executable"])).strip()[:2048] or "piper"
     piper_model_h1 = str(value.get("piper_model_h1", current["piper_model_h1"])).strip()[:2048]
     piper_model_h2 = str(value.get("piper_model_h2", current["piper_model_h2"])).strip()[:2048]
-    # Validate and constrain the endpoint to loopback. This prevents sending script text to a remote host.
+    # Validate and constrain the text endpoint to loopback to avoid remote script leakage.
     from .providers import _base_url
     base_url = _base_url(base_url)
-    persisted = {"text_provider": provider, "llama_cpp_base_url": base_url, "llama_cpp_model": model,
+    from .comfyui import normalize_comfyui_base_url
+    comfyui_base_url = normalize_comfyui_base_url(value.get("comfyui_base_url", current.get("comfyui_base_url")))
+    persisted = {"text_provider": provider, "llama_cpp_base_url": base_url, "comfyui_base_url": comfyui_base_url, "llama_cpp_model": model,
                  "gigachat_model": gigachat_model, "gigachat_cloud_ack": gigachat_cloud_ack,
                  "voice_provider": voice_provider, "piper_executable": piper_executable,
                  "piper_model_h1": piper_model_h1, "piper_model_h2": piper_model_h2,

@@ -1,0 +1,132 @@
+import json
+import sys
+import tempfile
+import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from factory.comfyui import ComfyUIError, check_comfyui_connection, normalize_comfyui_base_url
+from factory.server import Handler
+from factory.settings import save_settings
+
+
+class FakeComfyUIHandler(BaseHTTPRequestHandler):
+    requests = []
+    redirect_stats = False
+
+    def do_GET(self):
+        type(self).requests.append((self.command, self.path))
+        if self.path == "/system_stats" and type(self).redirect_stats:
+            self.send_response(302)
+            self.send_header("Location", "http://example.com/should-not-be-requested")
+            self.end_headers()
+            return
+        if self.path == "/system_stats":
+            payload = {"system": {"os": "test-os", "python_version": "3.12", "pytorch_version": "2.5"},
+                       "devices": [{"name": "CPU"}]}
+        elif self.path == "/object_info":
+            payload = {"CheckpointLoaderSimple": {}, "KSampler": {}, "AgnesImage": {}, "AgnesText": {}, "OtherNode": {}}
+        else:
+            self.send_error(404)
+            return
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *_args):
+        pass
+
+    def do_POST(self):
+        type(self).requests.append((self.command, self.path))
+        self.send_error(405)
+
+
+class ComfyUITests(unittest.TestCase):
+    def setUp(self):
+        FakeComfyUIHandler.requests = []
+        FakeComfyUIHandler.redirect_stats = False
+        self.comfy_server = ThreadingHTTPServer(("127.0.0.1", 0), FakeComfyUIHandler)
+        self.comfy_thread = Thread(target=self.comfy_server.serve_forever, daemon=True)
+        self.comfy_thread.start()
+        self.base_url = f"http://127.0.0.1:{self.comfy_server.server_port}"
+
+    def tearDown(self):
+        self.comfy_server.shutdown()
+        self.comfy_server.server_close()
+        self.comfy_thread.join(timeout=2)
+
+    def test_local_url_normalization_and_remote_rejection(self):
+        self.assertEqual(normalize_comfyui_base_url(" http://localhost:8188/ "), "http://localhost:8188")
+        self.assertEqual(normalize_comfyui_base_url("http://[::1]:8188"), "http://[::1]:8188")
+        for address in ("https://example.com", "http://192.168.1.10:8188", "file:///tmp", "http://localhost:8188/path", "http://localhost:bad-port"):
+            with self.subTest(address=address), self.assertRaises(ComfyUIError):
+                normalize_comfyui_base_url(address)
+
+    def test_connection_reads_stats_and_node_info_without_submitting_workflow(self):
+        result = check_comfyui_connection({"comfyui_base_url": self.base_url})
+        self.assertTrue(result["connected"])
+        self.assertEqual(result["node_count"], 5)
+        self.assertEqual(result["nodes"], {"CheckpointLoaderSimple": True, "KSampler": True,
+                                            "AgnesImage": True, "AgnesText": True})
+        self.assertEqual(result["system"]["device_count"], 1)
+        self.assertEqual(FakeComfyUIHandler.requests, [("GET", "/system_stats"), ("GET", "/object_info")])
+
+    def test_redirect_from_local_api_is_not_followed(self):
+        FakeComfyUIHandler.redirect_stats = True
+        with self.assertRaisesRegex(ComfyUIError, "302"):
+            check_comfyui_connection({"comfyui_base_url": self.base_url})
+        self.assertEqual(FakeComfyUIHandler.requests, [("GET", "/system_stats")])
+
+    def test_settings_save_only_loopback_comfyui_address(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("factory.settings.SETTINGS_PATH", Path(tmp) / "settings.json"), \
+             patch("factory.settings.ENV_PATH", Path(tmp) / "missing.env"):
+            saved = save_settings({"comfyui_base_url": self.base_url})
+            self.assertEqual(saved["comfyui_base_url"], self.base_url)
+            persisted = json.loads((Path(tmp) / "settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(persisted["comfyui_base_url"], self.base_url)
+            with self.assertRaises(ComfyUIError):
+                save_settings({"comfyui_base_url": "http://example.com:8188"})
+
+    def test_local_server_api_returns_discovery_and_does_not_run_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("factory.server.SETTINGS_PATH", Path(tmp) / "settings.json"), \
+             patch("factory.settings.SETTINGS_PATH", Path(tmp) / "settings.json"), \
+             patch("factory.settings.ENV_PATH", Path(tmp) / "missing.env"):
+            app_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            app_thread = Thread(target=app_server.serve_forever, daemon=True)
+            app_thread.start()
+            try:
+                request = Request(f"http://127.0.0.1:{app_server.server_port}/api/settings/comfyui/test",
+                                  data=json.dumps({"base_url": self.base_url}).encode("utf-8"),
+                                  headers={"Content-Type": "application/json"}, method="POST")
+                with urlopen(request) as response:
+                    result = json.loads(response.read())
+                self.assertTrue(result["connected"])
+                self.assertTrue(result["nodes"]["AgnesImage"])
+                self.assertEqual(FakeComfyUIHandler.requests, [("GET", "/system_stats"), ("GET", "/object_info")])
+
+                bad_request = Request(f"http://127.0.0.1:{app_server.server_port}/api/settings/comfyui/test",
+                                      data=b'{"base_url":"http://example.com"}',
+                                      headers={"Content-Type": "application/json"}, method="POST")
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(bad_request)
+                self.assertEqual(error.exception.code, 400)
+            finally:
+                app_server.shutdown()
+                app_server.server_close()
+                app_thread.join(timeout=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

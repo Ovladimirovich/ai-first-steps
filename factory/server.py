@@ -25,6 +25,7 @@ from .jobs import cancel_job, list_jobs, recover_jobs
 from .providers import ProviderError, test_connection, check_gigachat_connection
 from .settings import SETTINGS_PATH, gigachat_credentials, load_settings, save_settings
 from .voice import check_piper_settings
+from .comfyui import ComfyUIError, check_comfyui_connection
 from .visuals import (create_visual_variant, deselect_visual_variant, list_visual_variants,
                       reject_visual_variant, review_visual_variant, select_visual_variant,
                       update_visual_prompt)
@@ -233,6 +234,11 @@ class Handler(BaseHTTPRequestHandler):
                 project = create_project(body)
                 return self._json(201, project)
             parts = path.strip("/").split("/")
+            if path == "/api/settings/comfyui/test":
+                settings = load_settings()
+                settings["comfyui_base_url"] = body.get("base_url", settings.get("comfyui_base_url"))
+                saved = save_settings(settings)
+                return self._json(200, check_comfyui_connection(saved))
             if path == "/api/settings/voice/test":
                 settings = load_settings()
                 if settings.get("voice_provider") != "piper":
