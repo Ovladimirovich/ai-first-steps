@@ -1,5 +1,7 @@
 import base64
 import json
+import struct
+import zlib
 import sys
 import tempfile
 import threading
@@ -19,6 +21,14 @@ from factory.fingerprints import project_fingerprints
 from factory.server import Handler
 from factory.visuals import (create_visual_variant, list_visual_variants, reject_visual_variant,
                              review_visual_variant, select_visual_variant, update_visual_prompt)
+
+
+def _test_png() -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x80")) + chunk(b"IEND", b""))
 
 
 class VisualVariantTests(unittest.TestCase):
@@ -73,6 +83,80 @@ class VisualVariantTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "изменился"):
             update_visual_prompt(self.project["id"], self.scene_id, {
                 "expected_revision": before["revision"], "prompt": "устаревший prompt"})
+
+    def test_local_image_plan_is_zero_cost_and_bound_to_selected_model(self):
+        update_visual_prompt(self.project["id"], self.scene_id, {
+            "expected_revision": self.project["revision"], "prompt": "Кораблик на пруду",
+            "negative_prompt": "Текст", "description": "", "reference_asset_ids": [],
+        })
+        current = load_project(self.project["id"])
+        with patch("factory.settings.load_settings", return_value={
+                "comfyui_local_model": "cyberrealistic_v80.safetensors"}):
+            from factory.pipeline import plan, run
+            planned = plan(current, "image", self.scene_id)
+            with self.assertRaisesRegex(ValueError, "явное подтверждение"):
+                run(current, planned["id"], "image", self.scene_id)
+        self.assertEqual(planned["provider"], "comfyui_local")
+        self.assertEqual(planned["cost"], 0)
+        self.assertEqual(planned["generation"]["model"], "cyberrealistic_v80.safetensors")
+        self.assertEqual(planned["generation"]["scene_id"], self.scene_id)
+        self.assertIn("нет облачного", planned["message"])
+
+    def test_local_image_job_registers_generated_png_as_unselected_candidate(self):
+        update_visual_prompt(self.project["id"], self.scene_id, {
+            "expected_revision": self.project["revision"], "prompt": "Кораблик на пруду",
+            "negative_prompt": "Текст", "description": "", "reference_asset_ids": [],
+        })
+        current = load_project(self.project["id"])
+        png = _test_png()
+        job = {"id": "test-local-image-job", "action_id": "test-local-image-action",
+               "project_id": self.project["id"],
+               "payload": {"revision": current["revision"], "generation": {
+                   "model": "cyberrealistic_v80.safetensors", "seed": 42,
+                   "width": 1, "height": 1, "steps": 20, "cfg": 7.0}},
+               "checkpoint": {}, "input_fingerprint": "test-fingerprint", "progress": 0, "log": []}
+        def fake_generate(_settings, **kwargs):
+            kwargs["on_submitted"]("mock-prompt-1")
+            return png, {"prompt_id": "mock-prompt-1", "seed": 42, "steps": 20, "cfg": 7.0,
+                         "width": 1, "height": 1, "sampler": "euler", "scheduler": "normal"}
+        with patch("factory.settings.load_settings", return_value={
+                "comfyui_local_model": "cyberrealistic_v80.safetensors"}), \
+             patch("factory.comfyui.generate_local_txt2img", side_effect=fake_generate) as generate, \
+             patch("factory.pipeline.persist_job"), \
+             patch("factory.pipeline.job_checkpoint", side_effect=lambda j, checkpoint: j.update(checkpoint=checkpoint)), \
+             patch("factory.pipeline.is_cancel_requested", return_value=False):
+            from factory.pipeline import _make_local_image_variant
+            _make_local_image_variant(current, job, self.scene_id)
+            _make_local_image_variant(current, job, self.scene_id)
+            self.assertEqual(generate.call_count, 1, "recovery after asset registration must not regenerate")
+        variants = list_visual_variants(self.project["id"], self.scene_id)["variants"]
+        self.assertEqual(len(variants), 1)
+        self.assertEqual(variants[0]["state"], "created")
+        self.assertEqual(variants[0]["source"], "generated")
+        self.assertEqual(variants[0]["provenance"], "comfyui_local_txt2img")
+        self.assertIsNone(variants[0].get("selected_at"))
+        self.assertEqual(job["checkpoint"]["stage"], "comfyui_prompt_submitted")
+        self.assertIn("(не выбран)", job["message"])
+
+    def test_interrupted_unknown_comfy_submission_is_never_automatically_repeated(self):
+        update_visual_prompt(self.project["id"], self.scene_id, {
+            "expected_revision": self.project["revision"], "prompt": "Кораблик на пруду",
+            "negative_prompt": "", "description": "", "reference_asset_ids": [],
+        })
+        current = load_project(self.project["id"])
+        job = {"id": "interrupted-local-image-job", "project_id": self.project["id"],
+               "payload": {"revision": current["revision"], "generation": {
+                   "model": "cyberrealistic_v80.safetensors", "seed": 42,
+                   "width": 512, "height": 512, "steps": 20, "cfg": 7.0}},
+               "checkpoint": {"stage": "comfyui_submission_in_flight"}, "log": []}
+        with patch("factory.settings.load_settings", return_value={
+                "comfyui_local_model": "cyberrealistic_v80.safetensors"}), \
+             patch("factory.comfyui.generate_local_txt2img") as generate, \
+             patch("factory.pipeline.is_cancel_requested", return_value=False):
+            from factory.pipeline import _make_local_image_variant
+            with self.assertRaisesRegex(ValueError, "повторной отправки не будет"):
+                _make_local_image_variant(current, job, self.scene_id)
+        generate.assert_not_called()
 
     def test_variant_is_immutable_candidate_review_select_and_deselect(self):
         project = load_project(self.project["id"])

@@ -12,7 +12,8 @@ import time
 import uuid
 from pathlib import Path
 
-from .core import RENDERER_VERSION, ROOT, artifact_state, digest, legacy_who, project_dir, renderer_timing
+from .core import (RENDERER_VERSION, ROOT, artifact_state, digest, get_studio_document,
+                   legacy_who, project_dir, renderer_timing)
 from .fingerprints import project_fingerprints, verify_asset_record, verify_project_file
 from .assets import register_asset_file
 from .actions import append_action_event, get_action
@@ -167,6 +168,11 @@ def _stage_inputs(project: dict, stage: str, kind: str | None = None) -> dict:
                   "voice_lines": {key: item["fingerprint"] for key, item in data["voice_lines"].items()}}
     elif stage == "frames":
         inputs = {"frames": {key: item["fingerprint"] for key, item in data["frames"].items()}}
+    elif stage == "image":
+        scene_id = str(kind or "")
+        if scene_id not in data["image_generation"]:
+            raise ValueError("Сцена для генерации изображения не найдена")
+        inputs = {"image_generation": {scene_id: data["image_generation"][scene_id]["fingerprint"]}}
     elif stage == "render":
         render_kind = kind or "draft"
         if render_kind not in ("draft", "final"):
@@ -188,7 +194,37 @@ def plan(project: dict, stage: str, kind: str | None = None) -> dict:
     total_units = 0
     if not spec.get("script", {}).get("scenes"):
         raise ValueError("Сначала подготовьте сценарий")
-    if stage == "voice":
+    image_generation = None
+    provider = "local_pipeline"
+    if stage == "image":
+        scene_id = str(kind or "")
+        if int(project.get("schema_version", 1)) < 2:
+            raise ValueError("Для генерации варианта требуется явная миграция проекта на v2")
+        scene = next((item for item in spec["script"]["scenes"] if str(item.get("id")) == scene_id), None)
+        if not scene:
+            raise ValueError("Сцена для генерации изображения не найдена")
+        studio = get_studio_document(project["id"])
+        visual = studio.get("production", {}).get("visuals", {}).get(scene_id, {})
+        text_prompt = str(visual.get("prompt", {}).get("text", "")).strip()
+        if not text_prompt:
+            raise ValueError("Сначала сохраните непустой prompt для этой сцены")
+        from .settings import load_settings
+        comfy_settings = load_settings()
+        model = str(comfy_settings.get("comfyui_local_model", "")).strip()
+        if not model:
+            raise ValueError("Сначала выберите checkpoint-модель в настройках ComfyUI")
+        seed = uuid.uuid4().int & 0xFFFFFFFF
+        image_generation = {"profile_id": "comfyui-core-txt2img-v1", "scene_id": scene_id,
+                            "model": model, "seed": seed, "width": 512, "height": 512,
+                            "steps": 20, "cfg": 7.0}
+        units = total_units = 1
+        estimate = 60
+        provider = "comfyui_local"
+        message = (f"Создать 1 локальный вариант для сцены «{str(scene.get('title', scene_id))[:100]}» "
+                   f"моделью {model}, 512×512, 20 шагов · примерно от 60 сек (CPU может быть медленнее). "
+                   "В ComfyUI уйдёт только prompt/negative prompt; обработка локальная, стоимость 0 ₽. "
+                   "При ошибке нет облачного или платного fallback.")
+    elif stage == "voice":
         from .settings import load_settings
         voice_provider = str(load_settings().get("voice_provider", "demo"))
         line_units = artifacts["voice_units"]
@@ -219,12 +255,13 @@ def plan(project: dict, stage: str, kind: str | None = None) -> dict:
              "revision": project["revision"], "spec_hash": digest(spec), "input_fingerprint": input_fingerprint,
              "fingerprint_version": fingerprints.get("fingerprint_version"), "created_at": time.time(),
              "units": units, "total_units": total_units or units, "estimate_s": estimate,
-             "cost": 0, "cost_currency": "EUR", "provider": "local_pipeline", "message": message}
+             "cost": 0, "cost_currency": "EUR", "provider": provider, "message": message,
+             **({"generation": image_generation} if image_generation else {})}
     atomic_write_json(_plan_path(project["id"], plan_id), entry)
     append_action_event(project["id"], "action_proposed", actor="user", data={
         "action_id": action_id, "kind": "production", "stage": stage, "render_kind": kind,
         "revision": project["revision"], "input_fingerprint": input_fingerprint,
-        "provider": "local_pipeline", "cost_estimate": {"amount": 0, "currency": "EUR"},
+        "provider": provider, "cost_estimate": {"amount": 0, "currency": "EUR"},
         "privacy_scope": "local", "status": "proposed"})
     return entry
 
@@ -247,8 +284,8 @@ def run(project: dict, plan_id: str, stage: str, kind: str | None = None,
         if (plan_entry["revision"] != project["revision"] or plan_entry["spec_hash"] != digest(project["spec"]) or
                 plan_entry.get("input_fingerprint") != stage_input_fingerprint(project, stage, kind)):
             raise ValueError("Замысел изменился или входные данные устарели после сметы. Проверьте обновлённую смету.")
-        if stage == "render" and plan_entry["kind"] != kind:
-            raise ValueError("Тип сборки не совпадает со сметой.")
+        if stage in ("render", "image") and plan_entry.get("kind") != kind:
+            raise ValueError("Тип/сцена не совпадает со сметой.")
         for existing in list_jobs(project["id"]):
             if existing.get("action_id") == plan_entry["action_id"]:
                 if existing.get("state") == "queued":
@@ -257,6 +294,8 @@ def run(project: dict, plan_id: str, stage: str, kind: str | None = None,
         action = get_action(project["id"], plan_entry["action_id"])
         if action["status"] != "proposed":
             raise ValueError("Действие уже подтверждено, отклонено или запущено")
+        if stage == "image" and not isinstance(confirmation, dict):
+            raise ValueError("Для локальной генерации изображения требуется явное подтверждение")
         approval = confirmation or {"max_cost": 0, "currency": "EUR", "privacy_scope": "local", "consent": True}
         try:
             max_cost = float(approval.get("max_cost", -1))
@@ -273,7 +312,8 @@ def run(project: dict, plan_id: str, stage: str, kind: str | None = None,
                                "input_fingerprint": plan_entry["input_fingerprint"]}
         return create_job(project["id"], action_id=plan_entry["action_id"], job_type="pipeline",
                           payload={"plan_id": plan_id, "revision": project["revision"],
-                                   "spec_hash": plan_entry["spec_hash"], "stage": stage, "kind": kind},
+                                   "spec_hash": plan_entry["spec_hash"], "stage": stage, "kind": kind,
+                                   **({"generation": plan_entry["generation"]} if plan_entry.get("generation") else {})},
                           input_fingerprint=plan_entry["input_fingerprint"], stage=stage, kind=kind,
                           approval=confirmation_record)
 
@@ -317,6 +357,8 @@ def _execute_job(job: dict) -> None:
         _make_voice(project, job)
     elif stage == "frames":
         _make_frames(project, job)
+    elif stage == "image":
+        _make_local_image_variant(project, job, str(payload.get("kind", "")))
     elif stage == "render":
         _make_render(project, job, payload.get("kind") or "draft")
     else:
@@ -574,6 +616,146 @@ def _make_voice(project: dict, job: dict) -> None:
     atomic_write_json(root / "voice.meta.json", voice_meta)
     message = "Piper-озвучка готова. Речь обработана локально и подогнана под тайминг проекта." if voice_provider == "piper" else "Демо-озвучка готова. Это тишина с длительностью по тексту, не настоящий голос."
     _append(job, message, 95)
+
+def _validate_local_png(data: bytes, expected_width: int, expected_height: int) -> None:
+    import struct
+    import zlib
+
+    if len(data) < 57 or not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 3_500_000:
+        raise ValueError("ComfyUI вернул пустой, слишком большой или некорректный PNG")
+    offset, header, image_data, ended = 8, None, bytearray(), False
+    while offset + 12 <= len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        chunk_type = data[offset + 4:offset + 8]
+        start, end = offset + 8, offset + 8 + length
+        if length > len(data) or end + 4 > len(data):
+            raise ValueError("PNG содержит повреждённый блок")
+        chunk_data = data[start:end]
+        expected_crc = struct.unpack(">I", data[end:end + 4])[0]
+        if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != expected_crc:
+            raise ValueError("PNG содержит ошибку контрольной суммы")
+        if offset == 8 and (chunk_type != b"IHDR" or length != 13):
+            raise ValueError("PNG не начинается с корректного заголовка")
+        if chunk_type == b"IHDR":
+            header = struct.unpack(">IIBBBBB", chunk_data)
+        elif chunk_type == b"IDAT":
+            if header is None or len(image_data) + length > 3_500_000:
+                raise ValueError("PNG содержит некорректные данные изображения")
+            image_data.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            if length != 0 or end + 4 != len(data):
+                raise ValueError("PNG содержит некорректное завершение")
+            ended = True
+            break
+        elif chunk_type[:1].isupper():
+            raise ValueError("PNG содержит неподдерживаемый обязательный блок")
+        offset = end + 4
+    if not header or not image_data or not ended:
+        raise ValueError("PNG не содержит полного изображения")
+    width, height, bit_depth, color_type, compression, filtering, interlace = header
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(color_type)
+    if (width != expected_width or height != expected_height or width <= 0 or height <= 0
+            or width > 8192 or height > 8192 or width * height > 40_000_000
+            or bit_depth != 8 or channels is None or compression != 0 or filtering != 0 or interlace != 0):
+        raise ValueError("PNG имеет размер или формат, не совпадающий с локальным workflow")
+    expected_raw_size = height * (1 + width * channels)
+    inflater = zlib.decompressobj()
+    try:
+        raw = inflater.decompress(bytes(image_data), expected_raw_size + 1)
+    except zlib.error as exc:
+        raise ValueError("PNG содержит повреждённый поток изображения") from exc
+    if (len(raw) != expected_raw_size or not inflater.eof or inflater.unused_data
+            or inflater.unconsumed_tail):
+        raise ValueError("PNG содержит неполный или избыточный поток изображения")
+
+
+def _make_local_image_variant(project: dict, job: dict, scene_id: str) -> None:
+    """Generate one local ComfyUI image and append it as an unselected visual candidate."""
+    from .comfyui import generate_local_txt2img
+    from .core import get_studio_document
+    from .settings import load_settings
+    from .visuals import create_visual_variant
+
+    if not scene_id:
+        raise ValueError("Не указана сцена для локального изображения")
+    if is_cancel_requested(project["id"], job["id"]):
+        raise JobCancelled()
+    studio = get_studio_document(project["id"])
+    existing_asset = next((asset for asset in studio.get("assets", {}).get("assets", [])
+                           if asset.get("action_id") == job.get("action_id")
+                           and asset.get("type") == "scene_image"
+                           and str(asset.get("target", {}).get("scene_id")) == scene_id), None)
+    if existing_asset:
+        integrity = verify_asset_record(existing_asset, project_dir(project["id"]))
+        if not integrity.get("available") or not integrity.get("integrity_ok"):
+            raise ValueError("Ранее сохранённый вариант повреждён; новая генерация автоматически не запускается")
+        message = f"Локальный вариант уже сохранён в истории: {existing_asset['asset_id']} (не выбран)"
+        job["message"] = message
+        job["progress"] = 100
+        persist_job(job)
+        return
+    scene = next((item for item in studio["spec"].get("script", {}).get("scenes", [])
+                  if str(item.get("id")) == scene_id), None)
+    if not scene:
+        raise ValueError("Сцена для генерации изображения больше не существует")
+    visual = studio.get("production", {}).get("visuals", {}).get(scene_id, {})
+    prompt = visual.get("prompt", {}) if isinstance(visual.get("prompt"), dict) else {}
+    text_prompt = str(prompt.get("text", "")).strip()
+    negative_prompt = str(prompt.get("negative", "")).strip()
+    if not text_prompt:
+        raise ValueError("Сначала сохраните непустой prompt для этой сцены")
+    settings = load_settings()
+    generation = job.get("payload", {}).get("generation", {})
+    model = str(generation.get("model", ""))
+    if model != str(settings.get("comfyui_local_model", "")):
+        raise ValueError("Выбранная ComfyUI-модель изменилась; создайте новый план")
+
+    def report_progress(message: str) -> None:
+        job["message"] = message
+        job.setdefault("log", []).append(message)
+        job["log"] = job["log"][-40:]
+        job["progress"] = max(int(job.get("progress", 0)), 25)
+        persist_job(job)
+
+    saved_checkpoint = job.get("checkpoint", {})
+    if saved_checkpoint.get("stage") == "comfyui_submission_in_flight":
+        raise ValueError("Предыдущая отправка ComfyUI имеет неизвестный результат; проверьте локальную очередь, повторной отправки не будет")
+    image_bytes, metadata = generate_local_txt2img(
+        settings, model=model, prompt=text_prompt, negative_prompt=negative_prompt,
+        seed=int(generation["seed"]), width=int(generation["width"]),
+        height=int(generation["height"]), steps=int(generation["steps"]),
+        cfg=float(generation["cfg"]),
+        cancel_requested=lambda: is_cancel_requested(project["id"], job["id"]),
+        progress=report_progress,
+        on_submitting=lambda: job_checkpoint(job, {
+            "stage": "comfyui_submission_in_flight", "created_at": time.time()}),
+        on_submitted=lambda prompt_id: job_checkpoint(job, {
+            "stage": "comfyui_prompt_submitted", "prompt_id": prompt_id,
+            "created_at": time.time()}),
+        resume_prompt_id=(job.get("checkpoint", {}).get("prompt_id")
+                          if job.get("checkpoint", {}).get("stage") == "comfyui_prompt_submitted" else None),
+    )
+    if is_cancel_requested(project["id"], job["id"]):
+        raise JobCancelled()
+    _validate_local_png(image_bytes, int(generation["width"]), int(generation["height"]))
+    if is_cancel_requested(project["id"], job["id"]):
+        raise JobCancelled()
+    result = create_visual_variant(
+        project["id"], scene_id, image_bytes, expected_revision=int(job["payload"]["revision"]),
+        mime="image/png", extension=".png", prompt={"text": text_prompt, "negative": negative_prompt},
+        source="generated", provenance="comfyui_local_txt2img",
+        metadata={"action_id": job["action_id"], "model": model,
+                  "parameters": {key: metadata[key] for key in
+                    ("seed", "steps", "cfg", "width", "height", "sampler", "scheduler")},
+                  "created_by": "comfyui_local"},
+    )
+    message = f"Локальный вариант сохранён в истории: {result['variant']['asset_id']} (не выбран)"
+    job["message"] = message
+    job.setdefault("log", []).append(message)
+    job["log"] = job["log"][-40:]
+    job["progress"] = 100
+    persist_job(job)
+
 
 def _make_frames(project: dict, job: dict) -> None:
     from PIL import Image

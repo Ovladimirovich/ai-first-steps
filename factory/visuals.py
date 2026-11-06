@@ -173,7 +173,9 @@ def update_visual_prompt(project_id: str, scene_id: str, body: dict) -> dict:
 
 def create_visual_variant(project_id: str, scene_id: str, image_bytes: bytes, *,
                           expected_revision: int, mime: str, extension: str,
-                          prompt: dict | None = None) -> dict:
+                          prompt: dict | None = None, source: str = "uploaded",
+                          provenance: str = "visual_variant_upload",
+                          metadata: dict | None = None) -> dict:
     project, studio = _project_and_studio(project_id)
     if int(expected_revision) != int(project["revision"]):
         raise ValueError("Проект изменился перед сохранением варианта. Обновите сцену и повторите загрузку.")
@@ -192,11 +194,13 @@ def create_visual_variant(project_id: str, scene_id: str, image_bytes: bytes, *,
         prompt_record = {"text": str(current_prompt.get("text", "")),
                          "negative": str(current_prompt.get("negative", ""))}
     fingerprint = project_fingerprints(project)["image_generation"][str(scene_id)]["fingerprint"]
+    record_metadata = {"prompt": prompt_record, "created_by": "user"}
+    if metadata:
+        record_metadata.update(metadata)
     record = register_asset_bytes(project_id, image_bytes, asset_type="scene_image",
                                   target={"scene_id": str(scene_id)}, extension=extension, mime=mime,
-                                  source="uploaded", provenance="visual_variant_upload",
-                                  input_fingerprint=fingerprint,
-                                  metadata={"prompt": prompt_record, "created_by": "user"})
+                                  source=source, provenance=provenance,
+                                  input_fingerprint=fingerprint, metadata=record_metadata)
     append_action_event(project_id, "visual_variant_created", actor="user", data={
         "scene_id": str(scene_id), "asset_id": record["asset_id"],
         "asset_version": record["asset_version"], "input_fingerprint": fingerprint,

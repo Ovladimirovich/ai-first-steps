@@ -91,7 +91,8 @@ assert.match(html, /data-visual-negative/);
 assert.match(html, /data-upload-variant/);
 assert.match(html, /Проверить/);
 assert.match(html, /Тёплая мастерская &lt;уютно&gt;/);
-assert.match(html, /генераторы изображений пока не вызываются/);
+assert.match(html, /data-generate-local-image/);
+assert.match(html, /Облачный fallback отключён/);
 
 vm.runInContext(`project = { id: 'piper-ui-project', spec: { intent: { theme: 'Piper test', audience: { note: 'Зрители' }, target_duration_s: 30 }, heroes: [{ id: 'h1', name: 'Бит', role: 'explains' }, { id: 'h2', name: 'Маша', role: 'asks' }], look: { style_preset: 'warm_workshop' }, script: { scenes: [] } } }; currentStep = 0; settings = { text_provider: 'demo', llama_cpp_base_url: 'http://127.0.0.1:8081/v1', llama_cpp_model: '', gigachat_model: '', gigachat_cloud_ack: false, gigachat_credentials_configured: false, voice_provider: 'piper', piper_executable: 'piper', piper_model_h1: 'bit.onnx', piper_model_h2: 'masha.onnx' };`, context);
 html = vm.runInContext('renderIntent()', context);

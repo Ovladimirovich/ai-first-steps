@@ -374,13 +374,13 @@ class Handler(BaseHTTPRequestHandler):
                 action = parts[3]
                 if action == "script-draft":
                     return self._error("Непроверенный прямой draft отключён. Создайте предложение через /actions, подтвердите его, затем отдельно просмотрите и примените кандидат.", 409)
-                if action in ("voice-plan", "frames-plan", "render-plan"):
+                if action in ("voice-plan", "frames-plan", "render-plan", "image-plan"):
                     stage = action.removesuffix("-plan").replace("-", "_")
                     if stage == "render":
                         validate_spec(project["spec"])
                     result = plan(project, stage, body.get("kind"))
                     return self._json(200, result)
-                if action in ("voice-run", "frames-run", "render-run"):
+                if action in ("voice-run", "frames-run", "render-run", "image-run"):
                     stage = action.removesuffix("-run").replace("-", "_")
                     job = run(project, str(body.get("plan_id", "")), stage, body.get("kind"), body.get("confirmation"))
                     return self._json(202, job)

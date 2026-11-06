@@ -110,6 +110,22 @@
 
 Это подтверждает HTTP-export и 7-node payload, но не browser download и не локальную генерацию изображения.
 
+## 2026-11-06 — A2 local image-job implementation (Arena mock only; NOT LOCALLY-VERIFIED)
+
+**Статус:** новая реализация пока находится в незакоммиченном рабочем дереве Arena. Arena не подключалась к ComfyUI пользователя и не вызывала `/prompt`, Agnes или любой cloud API. Сетевые тесты используют только локальный fake HTTP server; пользователю не нужно передавать API key.
+
+| Проверка | Результат |
+|---|---|
+| Explicit confirmation | UI сначала показывает план и browser confirm; image-run API отклоняет отсутствие явного согласия, разрешён только local / 0 EUR |
+| Workflow | На `/object_info` строится стандартный 7-node graph; POST уходит только на валидированный loopback ComfyUI, Agnes nodes отсутствуют |
+| Job/result | Mock проверяет POST `/prompt`, получение prompt_id, polling `/history`, скачивание `/view`, PNG и метаданные sampler/scheduler |
+| Recovery/cancellation | Поддержано восстановление по сохранённому prompt_id; неизвестный исход POST fail-closed без повтора; queued job удаляется без глобального `/interrupt` |
+| Asset/history | Валидированный PNG добавляется в immutable image history как `generated` / `comfyui_local_txt2img`, lifecycle `created`; автоматического выбора нет |
+| Automated checks | 80 тестов, 1 optional skip (`imageio_ffmpeg` отсутствует); `node --check factory/web/app.js`, `node tests/test_action_ui.js`, `python -m py_compile factory/*.py`, `git diff --check` проходят |
+| Local runtime/browser | Ещё не проверены в этой версии; handoff Windows test steps находятся в `ROADMAP.md` |
+
+**Ожидаемый локальный отчёт:** версия Windows/Python/ComfyUI, выбранная локальная модель, шаги UI, длительность, появился ли unselected candidate и прошёл ли ручной select/render; явно отметить, что Agnes/cloud не запускался. Не включать ключи и личные данные, не удалять `.factory`/untracked-файлы и не делать push.
+
 ## Шаблон следующей проверки
 
 ```text

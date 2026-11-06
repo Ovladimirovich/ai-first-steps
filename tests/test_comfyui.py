@@ -1,3 +1,4 @@
+import base64
 import json
 import sys
 import tempfile
@@ -12,7 +13,9 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from factory.comfyui import ComfyUIError, check_comfyui_connection, normalize_comfyui_base_url
+from factory.comfyui import (ComfyUIError, check_comfyui_connection,
+                             generate_local_txt2img, normalize_comfyui_base_url)
+from factory.jobs import JobCancelled
 from factory.server import Handler
 from factory.settings import save_settings
 
@@ -20,10 +23,26 @@ from factory.settings import save_settings
 class FakeComfyUIHandler(BaseHTTPRequestHandler):
     requests = []
     redirect_stats = False
+    submitted_workflow = None
+    cancel_queued = False
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p7sAAAAASUVORK5CYII=")
 
     def do_GET(self):
         type(self).requests.append((self.command, self.path))
-        if self.path == "/system_stats" and type(self).redirect_stats:
+        if self.path.startswith("/history/"):
+            payload = {"test-prompt-1": {"status": {"status_str": "success", "completed": True},
+                                         "outputs": {"7": {"images": [{"filename": "test.png", "subfolder": "", "type": "output"}]}}}}
+        elif self.path.startswith("/view?"):
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(type(self).png)))
+            self.end_headers()
+            self.wfile.write(type(self).png)
+            return
+        elif self.path == "/queue":
+            pending = [[1, "test-prompt-1", {}, {}, []]] if type(self).cancel_queued else []
+            payload = {"queue_running": [], "queue_pending": pending}
+        elif self.path == "/system_stats" and type(self).redirect_stats:
             self.send_response(302)
             self.send_header("Location", "http://example.com/should-not-be-requested")
             self.end_headers()
@@ -50,7 +69,7 @@ class FakeComfyUIHandler(BaseHTTPRequestHandler):
                 "SaveImage": {"input": {"required": {"images": ["IMAGE"], "filename_prefix": ["STRING"]}}},
                 "AgnesImage": {}, "AgnesText": {}, "OtherNode": {},
             }
-        else:
+        elif not (self.path.startswith("/history/") or self.path == "/queue"):
             self.send_error(404)
             return
         raw = json.dumps(payload).encode("utf-8")
@@ -65,13 +84,30 @@ class FakeComfyUIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         type(self).requests.append((self.command, self.path))
-        self.send_error(405)
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length) if length else b"{}"
+        if self.path == "/prompt":
+            type(self).submitted_workflow = json.loads(body)
+            payload = {"prompt_id": "test-prompt-1"}
+        elif self.path == "/queue":
+            payload = {"deleted": json.loads(body).get("delete", [])}
+        else:
+            self.send_error(405)
+            return
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
 
 
 class ComfyUITests(unittest.TestCase):
     def setUp(self):
         FakeComfyUIHandler.requests = []
         FakeComfyUIHandler.redirect_stats = False
+        FakeComfyUIHandler.submitted_workflow = None
+        FakeComfyUIHandler.cancel_queued = False
         self.comfy_server = ThreadingHTTPServer(("127.0.0.1", 0), FakeComfyUIHandler)
         self.comfy_thread = Thread(target=self.comfy_server.serve_forever, daemon=True)
         self.comfy_thread.start()
@@ -154,6 +190,50 @@ class ComfyUITests(unittest.TestCase):
                 app_server.shutdown()
                 app_server.server_close()
                 app_thread.join(timeout=2)
+
+    def test_local_generation_submits_polls_and_downloads_only_standard_graph_output(self):
+        checkpoints = []
+        image, metadata = generate_local_txt2img(
+            {"comfyui_base_url": self.base_url}, model="model-a.safetensors",
+            prompt="A paper boat on a pond", negative_prompt="text", seed=42,
+            width=512, height=512, steps=20, cfg=7.0, timeout=1, poll_interval=0.01,
+            on_submitting=lambda: checkpoints.append("submitting"),
+            on_submitted=lambda prompt_id: checkpoints.append(prompt_id))
+        self.assertEqual(checkpoints, ["submitting", "test-prompt-1"])
+        self.assertEqual(image, FakeComfyUIHandler.png)
+        self.assertEqual(metadata["prompt_id"], "test-prompt-1")
+        self.assertEqual(metadata["sampler"], "euler")
+        self.assertEqual(metadata["scheduler"], "normal")
+        self.assertEqual([path for method, path in FakeComfyUIHandler.requests if method == "POST"], ["/prompt"])
+        workflow = FakeComfyUIHandler.submitted_workflow["prompt"]
+        self.assertEqual(workflow["1"]["inputs"]["ckpt_name"], "model-a.safetensors")
+        self.assertEqual(workflow["2"]["inputs"]["text"], "A paper boat on a pond")
+        self.assertNotIn("AgnesImage", {node["class_type"] for node in workflow.values()})
+
+    def test_local_generation_resume_does_not_submit_a_second_workflow(self):
+        image, metadata = generate_local_txt2img(
+            {"comfyui_base_url": self.base_url}, model="model-a.safetensors",
+            prompt="A paper boat on a pond", negative_prompt="", seed=42,
+            width=512, height=512, steps=20, cfg=7.0, resume_prompt_id="test-prompt-1",
+            timeout=1, poll_interval=0.01)
+        self.assertEqual(image, FakeComfyUIHandler.png)
+        self.assertEqual(metadata["prompt_id"], "test-prompt-1")
+        self.assertFalse(any(method == "POST" and path == "/prompt"
+                             for method, path in FakeComfyUIHandler.requests))
+
+    def test_local_generation_cancel_removes_pending_prompt_without_cloud_fallback(self):
+        FakeComfyUIHandler.cancel_queued = True
+        cancel_checks = iter((False, False, True))
+        with self.assertRaises(JobCancelled):
+            generate_local_txt2img(
+                {"comfyui_base_url": self.base_url}, model="model-a.safetensors",
+                prompt="A paper boat on a pond", negative_prompt="", seed=42,
+                width=512, height=512, steps=20, cfg=7.0,
+                cancel_requested=lambda: next(cancel_checks, True), timeout=1, poll_interval=0.01)
+        self.assertEqual([path for method, path in FakeComfyUIHandler.requests if method == "POST"],
+                         ["/prompt", "/queue"])
+        self.assertFalse(any("agnes" in path.lower() or "api.openai" in path.lower()
+                             for _, path in FakeComfyUIHandler.requests))
 
     def test_settings_save_only_loopback_comfyui_address(self):
         with tempfile.TemporaryDirectory() as tmp, \

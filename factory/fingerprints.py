@@ -169,6 +169,12 @@ def project_fingerprints(project: dict, *, story: dict | None = None,
     from .settings import load_settings
     runtime_voice_settings = load_settings()
     voice_provider = str(runtime_voice_settings.get("voice_provider", "demo"))
+    runtime_local_image_profile = {
+        "profile_id": "comfyui-core-txt2img-v1",
+        "base_url": runtime_voice_settings.get("comfyui_base_url", "http://127.0.0.1:8188"),
+        "model": runtime_voice_settings.get("comfyui_local_model", ""),
+        "width": 512, "height": 512, "steps": 20, "cfg": 7.0,
+    }
     voice_engine_version = "factory-piper-cli-v1" if voice_provider == "piper" else VOICE_ENGINE_VERSION
     scenes = sorted(story.get("script", {}).get("scenes", []), key=lambda item: item.get("order", 0))
     legacy_scenes = {str(scene.get("id")): scene for scene in legacy.get("script", {}).get("scenes", [])}
@@ -256,6 +262,7 @@ def project_fingerprints(project: dict, *, story: dict | None = None,
                 "generation": global_image_config,
                 "model": visual.get("model", production.get("image_model", {})),
                 "prompt_template_version": visual.get("prompt_template_version", production.get("image_prompt_template_version")),
+                "runtime_local_profile": runtime_local_image_profile,
             },
             reference_assets=[item["fingerprint"] for item in references],
         )

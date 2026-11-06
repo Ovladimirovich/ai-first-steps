@@ -1,8 +1,10 @@
-"""Local ComfyUI discovery and API helpers. This module never submits a workflow."""
+"""Loopback-only ComfyUI discovery, export, and explicitly confirmed local execution helpers."""
 from __future__ import annotations
 
 import json
 import socket
+import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -84,6 +86,142 @@ def export_local_txt2img_workflow(settings: dict, request: dict) -> dict:
         height=request.get("height", 512), steps=request.get("steps", 20),
         cfg=request.get("cfg", 7.0),
     )
+
+
+def _post_json(base_url: str, path: str, payload: dict, timeout: float = 20) -> dict:
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(base_url + path, data=raw,
+                                     headers={"Accept": "application/json", "Content-Type": "application/json"},
+                                     method="POST")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            body = response.read(4 * 1024 * 1024 + 1)
+    except urllib.error.HTTPError as exc:
+        raise ComfyUIError(f"ComfyUI API ответил с ошибкой {exc.code} на {path}") from exc
+    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as exc:
+        raise ComfyUIError("Не удалось отправить локальное задание в ComfyUI") from exc
+    if len(body) > 4 * 1024 * 1024:
+        raise ComfyUIError("Ответ ComfyUI слишком велик")
+    try:
+        result = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ComfyUIError(f"ComfyUI вернул некорректный JSON на {path}") from exc
+    if not isinstance(result, dict):
+        raise ComfyUIError(f"ComfyUI вернул неожиданный ответ на {path}")
+    return result
+
+
+def _get_bytes(base_url: str, path: str, *, timeout: float = 30, limit: int = 50 * 1024 * 1024) -> bytes:
+    request = urllib.request.Request(base_url + path, headers={"Accept": "image/*"}, method="GET")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            data = response.read(limit + 1)
+    except urllib.error.HTTPError as exc:
+        raise ComfyUIError(f"ComfyUI не смог отдать изображение ({exc.code})") from exc
+    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as exc:
+        raise ComfyUIError("Не удалось получить изображение из локального ComfyUI") from exc
+    if not data or len(data) > limit:
+        raise ComfyUIError("Файл изображения ComfyUI пуст или превышает лимит")
+    return data
+
+
+def _queue_contains(queue_data: dict, prompt_id: str, key: str) -> bool:
+    entries = queue_data.get(key, [])
+    if not isinstance(entries, list):
+        return False
+    return any(isinstance(entry, (list, tuple)) and len(entry) > 1 and str(entry[1]) == prompt_id
+               for entry in entries)
+
+
+def generate_local_txt2img(settings: dict, *, model: str, prompt: str, negative_prompt: str,
+                           seed: int, width: int, height: int, steps: int, cfg: float,
+                           cancel_requested=lambda: False, progress=lambda _message: None,
+                           on_submitting=lambda: None, on_submitted=lambda _prompt_id: None,
+                           resume_prompt_id: str | None = None, timeout: float = 3600,
+                           poll_interval: float = 1.5) -> tuple[bytes, dict]:
+    """Submit one explicitly requested local workflow, wait for its output, and return PNG bytes.
+
+    This method targets only a validated loopback ComfyUI address. It never switches providers.
+    A cancellation removes a still-pending prompt; a running prompt is allowed to finish rather
+    than using ComfyUI's global /interrupt endpoint, which could stop another user's workflow.
+    """
+    from .comfyui_profiles import build_local_txt2img_workflow
+    from .jobs import JobCancelled
+
+    base_url = normalize_comfyui_base_url(settings.get("comfyui_base_url"))
+    object_info = _get_json(base_url, "/object_info", timeout=20)
+    built = build_local_txt2img_workflow(
+        object_info, model=model, prompt=prompt, negative_prompt=negative_prompt, seed=seed,
+        width=width, height=height, steps=steps, cfg=cfg)
+    sampler_inputs = built["prompt"]["5"]["inputs"]
+    prompt_id = str(resume_prompt_id or "")
+    if cancel_requested() and not prompt_id:
+        raise JobCancelled()
+    if not prompt_id:
+        on_submitting()
+        if cancel_requested():
+            raise JobCancelled()
+        client_id = uuid.uuid4().hex
+        response = _post_json(base_url, "/prompt", {"prompt": built["prompt"], "client_id": client_id})
+        prompt_id = str(response.get("prompt_id", ""))
+        if response.get("node_errors"):
+            raise ComfyUIError("ComfyUI отклонил граф при локальной проверке узлов; сверьте профиль с /object_info")
+        if not prompt_id or len(prompt_id) > 128 or not all(c.isalnum() or c in "-_" for c in prompt_id):
+            raise ComfyUIError("ComfyUI не вернул корректный prompt_id для локального workflow")
+        on_submitted(prompt_id)
+    elif len(prompt_id) > 128 or not all(c.isalnum() or c in "-_" for c in prompt_id):
+        raise ComfyUIError("Сохранённый ComfyUI prompt_id некорректен; workflow не будет отправлен повторно")
+    started = time.monotonic()
+    last_progress = 0.0
+    while time.monotonic() - started < timeout:
+        elapsed = time.monotonic() - started
+        if cancel_requested():
+            queue_data = _get_json(base_url, "/queue", timeout=10)
+            if _queue_contains(queue_data, prompt_id, "queue_pending"):
+                _post_json(base_url, "/queue", {"delete": [prompt_id]}, timeout=10)
+                raise JobCancelled()
+            # Running prompts cannot be safely interrupted globally. Wait for the local
+            # workflow to finish, then discard its result so no candidate is registered.
+        history = _get_json(base_url, "/history/" + urllib.parse.quote(prompt_id, safe=""), timeout=15)
+        entry = history.get(prompt_id) if isinstance(history, dict) else None
+        if isinstance(entry, dict):
+            status = entry.get("status", {}) if isinstance(entry.get("status"), dict) else {}
+            if status.get("status_str") == "error" or entry.get("outputs") is None:
+                raise ComfyUIError("Локальный workflow завершился ошибкой; проверьте журнал/очередь только на своём компьютере")
+            outputs = entry.get("outputs", {})
+            save_output = outputs.get("7", {}) if isinstance(outputs, dict) else {}
+            images = save_output.get("images", []) if isinstance(save_output, dict) else []
+            if images:
+                image = images[0]
+                if not isinstance(image, dict) or not image.get("filename"):
+                    raise ComfyUIError("ComfyUI завершил workflow без корректного файла изображения")
+                filename = str(image["filename"])
+                subfolder = str(image.get("subfolder", ""))
+                image_type = str(image.get("type", "output"))
+                if (len(filename) > 255 or filename in (".", "..") or "/" in filename or "\\" in filename
+                        or any(ord(char) < 32 for char in filename) or subfolder not in ("", "ai_video_factory")
+                        or image_type != "output"):
+                    raise ComfyUIError("ComfyUI вернул небезопасный путь к файлу изображения")
+                query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": image_type})
+                data = _get_bytes(base_url, "/view?" + query, limit=3_500_000)
+                if cancel_requested():
+                    raise JobCancelled()
+                return data, {"prompt_id": prompt_id, "elapsed_s": round(elapsed, 2),
+                              "model": model, "seed": seed, "steps": steps, "cfg": cfg,
+                              "width": width, "height": height,
+                              "sampler": sampler_inputs["sampler_name"],
+                              "scheduler": sampler_inputs["scheduler"]}
+        if elapsed - last_progress >= 4:
+            progress("Жду локальный ComfyUI — workflow выполняется только на этом компьютере")
+            last_progress = elapsed
+        time.sleep(max(0.1, min(float(poll_interval), 5.0)))
+    # Avoid leaving work queued after timeout; don't interrupt a running ComfyUI task.
+    queue_data = _get_json(base_url, "/queue", timeout=10)
+    if _queue_contains(queue_data, prompt_id, "queue_pending"):
+        _post_json(base_url, "/queue", {"delete": [prompt_id]}, timeout=10)
+    raise ComfyUIError("Локальный workflow не завершился за отведённое время; проверьте очередь ComfyUI")
 
 
 def check_comfyui_connection(settings: dict) -> dict:
