@@ -93,6 +93,23 @@
 
 Это ручная проверка HTTP-export на `d8d970c`, не проверка сгенерированного изображения. Автотест подтверждает тот же endpoint на mock-сервере.
 
+## 2026-11-06 — ComfyUI workflow export и граф на API, commit `d8d970c`
+
+**Источник:** дополнительный отчёт пользователя о Windows-проверке. HEAD был detached `d8d970c`, рабочее дерево чистое; код соответствует потомку `335bb66`.
+
+| Проверка | Результат |
+|---|---|
+| Factory readiness | `python -m factory --port 7860`; `GET /api/settings` — 200 |
+| Model discovery | 3 checkpoint, 44 sampler, 9 scheduler; сохранён `cyberrealistic_v80.safetensors` |
+| HTTP workflow export | `POST /api/settings/comfyui/local-profile/workflow` — 200; `profile_id=comfyui-core-txt2img-v1`; `submitted=false` |
+| Состав графа | 7 узлов: CheckpointLoaderSimple, два CLIPTextEncode, EmptyLatentImage, KSampler, VAEDecode, SaveImage |
+| Параметры тестового графа | 512×512; seed 12345; 25 steps; CFG 8.0; euler/normal; prefix `ai_video_factory` |
+| ComfyUI `/prompt` | Не вызывался; проверено, что endpoint фабрики читает только GET `/object_info` |
+| Browser UI click и скачивание JSON | Не проверялись буквально: отчёт был сделан API-запросом к тому же endpoint, который вызывает `exportLocalWorkflow()`; автоматизированный браузер недоступен |
+| После проверки | Factory остановлена, временные файлы удалены, конфигурация `.factory` и Git-дерево чистые (по отчёту пользователя) |
+
+Это подтверждает HTTP-export и 7-node payload, но не browser download и не локальную генерацию изображения.
+
 ## Шаблон следующей проверки
 
 ```text
