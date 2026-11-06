@@ -76,7 +76,22 @@
 | POST `/prompt` / запуск workflow | Не выполнялся |
 | После проверки | Factory остановлена, временные файлы удалены, Git рабочее дерево чистое (по отчёту пользователя) |
 
-Это LOCALLY-VERIFIED подтверждение model discovery, сохранения выбора и программного экспорта графа на `4436091`; это не runtime-проверка генерации. Дополнительный HTTP endpoint экспорта, добавленный после этого commit, требует отдельной проверки на новом кодовом commit.
+Это LOCALLY-VERIFIED подтверждение model discovery, сохранения выбора и программного экспорта графа на `4436091`; это не runtime-проверка генерации.
+
+## 2026-11-06 — ComfyUI HTTP workflow export, commit `d8d970c`
+
+**Источник:** ручной отчёт пользователя о проверке Windows; factory API ответил успешно, workflow в ComfyUI не запускался.
+
+| Проверка | Результат |
+|---|---|
+| Factory readiness | `python -m factory --port 7860`; `GET /api/settings` — 200 |
+| `POST /api/settings/comfyui/local-profile/workflow` | 200; вернулся `comfyui-core-txt2img-v1`, `submitted=false` |
+| Сформированный граф | 7 узлов, модель `cyberrealistic_v80.safetensors`; seed 42, 512×512, 20 шагов, CFG 7.0, euler/normal, denoise 1.0; prefix `ai_video_factory` |
+| ComfyUI API-вызовы из endpoint | Только GET `/object_info`; ComfyUI `/prompt` не вызывался |
+| UI-клик/скачивание | Не проверялись этим отчётом; оставлены в следующем handoff |
+| После проверки | Factory остановлена, временные файлы удалены, Git чистый (по отчёту пользователя) |
+
+Это ручная проверка HTTP-export на `d8d970c`, не проверка сгенерированного изображения. Автотест подтверждает тот же endpoint на mock-сервере.
 
 ## Шаблон следующей проверки
 
