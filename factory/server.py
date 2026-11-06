@@ -26,7 +26,7 @@ from .providers import ProviderError, test_connection, check_gigachat_connection
 from .settings import SETTINGS_PATH, gigachat_credentials, load_settings, save_settings
 from .voice import check_piper_settings
 from .comfyui import (ComfyUIError, check_comfyui_connection,
-                     discover_local_txt2img_profile)
+                     discover_local_txt2img_profile, export_local_txt2img_workflow)
 from .visuals import (create_visual_variant, deselect_visual_variant, list_visual_variants,
                       reject_visual_variant, review_visual_variant, select_visual_variant,
                       update_visual_prompt)
@@ -245,6 +245,10 @@ class Handler(BaseHTTPRequestHandler):
                 settings["comfyui_base_url"] = body.get("base_url", settings.get("comfyui_base_url"))
                 saved = save_settings(settings)
                 return self._json(200, check_comfyui_connection(saved))
+            if path == "/api/settings/comfyui/local-profile/workflow":
+                workflow = export_local_txt2img_workflow(load_settings(), body)
+                return self._json(200, {**workflow, "submitted": False,
+                                        "message": "Workflow JSON сформирован; в ComfyUI он не отправлялся."})
             if path == "/api/settings/voice/test":
                 settings = load_settings()
                 if settings.get("voice_provider") != "piper":

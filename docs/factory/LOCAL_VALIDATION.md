@@ -62,6 +62,22 @@
 
 Это ручное LOCALLY-VERIFIED подтверждение только этапа безопасного discovery, не интеграции генерации изображений. Оно согласуется с unit-тестами `tests/test_comfyui.py`: пять тестов работают на mock-сервере и не заменяют реальную проверку. Никакой ключ или содержимое пользовательского workflow в репозиторий не добавлялись.
 
+## 2026-11-06 — ComfyUI local txt2img profile, commit `4436091`
+
+**Источник:** ручной отчёт пользователя о read-only/ dry-run проверке Windows; генерация не выполнялась.
+
+| Проверка | Результат |
+|---|---|
+| Factory readiness | `python -m factory --port 7860`; `GET /api/settings` — 200 |
+| Локальный профиль | `GET /api/settings/comfyui/local-profile` — 200; `comfyui-core-txt2img-v1`, `available=true` |
+| Обнаруженные ресурсы | 3 checkpoint: `cyberrealistic_v80.safetensors`, `majicmixRealistic_v7.safetensors`, `realisticvisionmadne_v15.safetensors`; 42 sampler, 9 scheduler |
+| Выбор модели | `cyberrealistic_v80.safetensors` сохранена через `PATCH /api/settings` и подтверждена `GET /api/settings` |
+| Workflow builder (программный dry-run) | Создан API-format JSON-граф из 7 узлов; модель и параметры совпали с сообщёнными настройками: seed 42, steps 20, CFG 7.0, euler, normal, denoise 1.0, prefix `ai_video_factory` |
+| POST `/prompt` / запуск workflow | Не выполнялся |
+| После проверки | Factory остановлена, временные файлы удалены, Git рабочее дерево чистое (по отчёту пользователя) |
+
+Это LOCALLY-VERIFIED подтверждение model discovery, сохранения выбора и программного экспорта графа на `4436091`; это не runtime-проверка генерации. Дополнительный HTTP endpoint экспорта, добавленный после этого commit, требует отдельной проверки на новом кодовом commit.
+
 ## Шаблон следующей проверки
 
 ```text

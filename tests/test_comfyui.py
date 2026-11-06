@@ -121,6 +121,40 @@ class ComfyUITests(unittest.TestCase):
                 app_server.server_close()
                 app_thread.join(timeout=2)
 
+    def test_local_workflow_export_returns_graph_without_submitting_it(self):
+        settings = {"comfyui_base_url": self.base_url, "comfyui_local_model": "model-a.safetensors"}
+        with patch("factory.server.load_settings", return_value=settings):
+            app_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            app_thread = Thread(target=app_server.serve_forever, daemon=True)
+            app_thread.start()
+            try:
+                body = {"model": "model-a.safetensors", "prompt": "A paper boat on a pond",
+                        "negative_prompt": "text", "seed": 42, "width": 512, "height": 512,
+                        "steps": 20, "cfg": 7.0}
+                request = Request(f"http://127.0.0.1:{app_server.server_port}/api/settings/comfyui/local-profile/workflow",
+                                  data=json.dumps(body).encode("utf-8"),
+                                  headers={"Content-Type": "application/json"}, method="POST")
+                with urlopen(request) as response:
+                    result = json.loads(response.read())
+                self.assertFalse(result["submitted"])
+                self.assertEqual(result["profile_id"], "comfyui-core-txt2img-v1")
+                self.assertEqual(len(result["prompt"]), 7)
+                self.assertEqual(result["prompt"]["1"]["inputs"]["ckpt_name"], "model-a.safetensors")
+                self.assertEqual(FakeComfyUIHandler.requests, [("GET", "/object_info")])
+
+                body["model"] = "another-model.safetensors"
+                bad = Request(f"http://127.0.0.1:{app_server.server_port}/api/settings/comfyui/local-profile/workflow",
+                              data=json.dumps(body).encode("utf-8"),
+                              headers={"Content-Type": "application/json"}, method="POST")
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(bad)
+                self.assertEqual(error.exception.code, 400)
+                self.assertEqual(FakeComfyUIHandler.requests, [("GET", "/object_info")])
+            finally:
+                app_server.shutdown()
+                app_server.server_close()
+                app_thread.join(timeout=2)
+
     def test_settings_save_only_loopback_comfyui_address(self):
         with tempfile.TemporaryDirectory() as tmp, \
              patch("factory.settings.SETTINGS_PATH", Path(tmp) / "settings.json"), \

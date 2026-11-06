@@ -65,6 +65,27 @@ def discover_local_txt2img_profile(settings: dict) -> dict:
     return inspect_local_txt2img_profile(get_comfyui_object_info(settings))
 
 
+def export_local_txt2img_workflow(settings: dict, request: dict) -> dict:
+    """Build a local workflow JSON for export; this function never submits it."""
+    from .comfyui_profiles import build_local_txt2img_workflow
+    if not isinstance(request, dict):
+        raise ComfyUIError("Ожидался JSON-объект параметров workflow")
+    model = str(settings.get("comfyui_local_model", "")).strip()
+    if not model:
+        raise ComfyUIError("Сначала выберите локальную checkpoint-модель в настройках")
+    requested_model = str(request.get("model", model)).strip()
+    if requested_model != model:
+        raise ComfyUIError("Для экспорта используйте модель, сохранённую в настройках фабрики")
+    object_info = get_comfyui_object_info(settings)
+    return build_local_txt2img_workflow(
+        object_info, model=model, prompt=request.get("prompt", ""),
+        negative_prompt=request.get("negative_prompt", ""),
+        seed=request.get("seed", 42), width=request.get("width", 512),
+        height=request.get("height", 512), steps=request.get("steps", 20),
+        cfg=request.get("cfg", 7.0),
+    )
+
+
 def check_comfyui_connection(settings: dict) -> dict:
     """Check the local ComfyUI API and discover node classes without running any workflow."""
     base_url = normalize_comfyui_base_url(settings.get("comfyui_base_url"))

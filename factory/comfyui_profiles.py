@@ -128,8 +128,10 @@ def build_local_txt2img_workflow(object_info: dict, *, model: str, prompt: str,
         raise WorkflowProfileError("Negative prompt не должен превышать 4000 символов")
     if type(seed) is not int or seed < 0 or seed > 0xFFFFFFFFFFFFFFFF:
         raise WorkflowProfileError("Seed должен быть целым числом от 0 до 2^64−1")
-    if type(width) is not int or type(height) is not int or width < 64 or height < 64 or width > 8192 or height > 8192 or width * height > 40_000_000:
-        raise WorkflowProfileError("Размер изображения должен быть не меньше 64 px и не превышать лимит 40 Мп")
+    if (type(width) is not int or type(height) is not int or width < 64 or height < 64
+            or width > 8192 or height > 8192 or width * height > 40_000_000
+            or width % 8 or height % 8):
+        raise WorkflowProfileError("Размер изображения должен быть от 64 px, кратен 8 и не превышать лимит 40 Мп")
     if type(steps) is not int or not 1 <= steps <= 100:
         raise WorkflowProfileError("Число шагов должно быть от 1 до 100")
     if type(cfg) not in (int, float) or not 0 <= float(cfg) <= 30:
