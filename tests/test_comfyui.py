@@ -32,7 +32,24 @@ class FakeComfyUIHandler(BaseHTTPRequestHandler):
             payload = {"system": {"os": "test-os", "python_version": "3.12", "pytorch_version": "2.5"},
                        "devices": [{"name": "CPU"}]}
         elif self.path == "/object_info":
-            payload = {"CheckpointLoaderSimple": {}, "KSampler": {}, "AgnesImage": {}, "AgnesText": {}, "OtherNode": {}}
+            payload = {
+                "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["model-a.safetensors"]]}},
+                                            "output": ["MODEL", "CLIP", "VAE"],
+                                            "output_name": ["MODEL", "CLIP", "VAE"]},
+                "CLIPTextEncode": {"input": {"required": {"text": ["STRING"], "clip": ["CLIP"]}},
+                                   "output": ["CONDITIONING"], "output_name": ["CONDITIONING"]},
+                "EmptyLatentImage": {"input": {"required": {"width": ["INT"], "height": ["INT"], "batch_size": ["INT"]}},
+                                     "output": ["LATENT"], "output_name": ["LATENT"]},
+                "KSampler": {"input": {"required": {
+                    "seed": ["INT"], "steps": ["INT"], "cfg": ["FLOAT"],
+                    "sampler_name": [["euler"]], "scheduler": [["normal"]], "denoise": ["FLOAT"],
+                    "model": ["MODEL"], "positive": ["CONDITIONING"], "negative": ["CONDITIONING"],
+                    "latent_image": ["LATENT"]}}, "output": ["LATENT"], "output_name": ["LATENT"]},
+                "VAEDecode": {"input": {"required": {"samples": ["LATENT"], "vae": ["VAE"]}},
+                              "output": ["IMAGE"], "output_name": ["IMAGE"]},
+                "SaveImage": {"input": {"required": {"images": ["IMAGE"], "filename_prefix": ["STRING"]}}},
+                "AgnesImage": {}, "AgnesText": {}, "OtherNode": {},
+            }
         else:
             self.send_error(404)
             return
@@ -75,7 +92,7 @@ class ComfyUITests(unittest.TestCase):
     def test_connection_reads_stats_and_node_info_without_submitting_workflow(self):
         result = check_comfyui_connection({"comfyui_base_url": self.base_url})
         self.assertTrue(result["connected"])
-        self.assertEqual(result["node_count"], 5)
+        self.assertEqual(result["node_count"], 9)
         self.assertEqual(result["nodes"], {"CheckpointLoaderSimple": True, "KSampler": True,
                                             "AgnesImage": True, "AgnesText": True})
         self.assertEqual(result["system"]["device_count"], 1)
@@ -87,14 +104,34 @@ class ComfyUITests(unittest.TestCase):
             check_comfyui_connection({"comfyui_base_url": self.base_url})
         self.assertEqual(FakeComfyUIHandler.requests, [("GET", "/system_stats")])
 
+    def test_local_profile_api_lists_live_checkpoint_and_sampler_choices(self):
+        with patch("factory.server.load_settings", return_value={"comfyui_base_url": self.base_url}):
+            app_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            app_thread = Thread(target=app_server.serve_forever, daemon=True)
+            app_thread.start()
+            try:
+                with urlopen(f"http://127.0.0.1:{app_server.server_port}/api/settings/comfyui/local-profile") as response:
+                    result = json.loads(response.read())
+                self.assertEqual(result["profile_id"], "comfyui-core-txt2img-v1")
+                self.assertEqual(result["models"], ["model-a.safetensors"])
+                self.assertEqual(result["samplers"], ["euler"])
+                self.assertEqual(FakeComfyUIHandler.requests, [("GET", "/object_info")])
+            finally:
+                app_server.shutdown()
+                app_server.server_close()
+                app_thread.join(timeout=2)
+
     def test_settings_save_only_loopback_comfyui_address(self):
         with tempfile.TemporaryDirectory() as tmp, \
              patch("factory.settings.SETTINGS_PATH", Path(tmp) / "settings.json"), \
              patch("factory.settings.ENV_PATH", Path(tmp) / "missing.env"):
-            saved = save_settings({"comfyui_base_url": self.base_url})
+            saved = save_settings({"comfyui_base_url": self.base_url,
+                                   "comfyui_local_model": "model-a.safetensors"})
             self.assertEqual(saved["comfyui_base_url"], self.base_url)
+            self.assertEqual(saved["comfyui_local_model"], "model-a.safetensors")
             persisted = json.loads((Path(tmp) / "settings.json").read_text(encoding="utf-8"))
             self.assertEqual(persisted["comfyui_base_url"], self.base_url)
+            self.assertEqual(persisted["comfyui_local_model"], "model-a.safetensors")
             with self.assertRaises(ComfyUIError):
                 save_settings({"comfyui_base_url": "http://example.com:8188"})
 

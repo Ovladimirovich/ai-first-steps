@@ -18,6 +18,7 @@ DEFAULT_SETTINGS = {
     "piper_model_h2": "",
     "gigachat_models": [],
     "comfyui_base_url": "http://127.0.0.1:8188",
+    "comfyui_local_model": "",
 }
 SETTINGS_PATH = ROOT / ".factory" / "settings.json"
 ENV_PATH = ROOT / ".env"
@@ -91,7 +92,9 @@ def save_settings(value: dict) -> dict:
     base_url = _base_url(base_url)
     from .comfyui import normalize_comfyui_base_url
     comfyui_base_url = normalize_comfyui_base_url(value.get("comfyui_base_url", current.get("comfyui_base_url")))
-    persisted = {"text_provider": provider, "llama_cpp_base_url": base_url, "comfyui_base_url": comfyui_base_url, "llama_cpp_model": model,
+    comfyui_local_model = str(value.get("comfyui_local_model", current.get("comfyui_local_model", ""))).strip()[:512]
+    persisted = {"text_provider": provider, "llama_cpp_base_url": base_url, "comfyui_base_url": comfyui_base_url,
+                 "comfyui_local_model": comfyui_local_model, "llama_cpp_model": model,
                  "gigachat_model": gigachat_model, "gigachat_cloud_ack": gigachat_cloud_ack,
                  "voice_provider": voice_provider, "piper_executable": piper_executable,
                  "piper_model_h1": piper_model_h1, "piper_model_h2": piper_model_h2,

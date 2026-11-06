@@ -53,11 +53,23 @@ def _get_json(base_url: str, path: str, timeout: float) -> dict:
     return result
 
 
+def get_comfyui_object_info(settings: dict) -> dict:
+    """Read the local node schema for building a validated workflow profile."""
+    base_url = normalize_comfyui_base_url(settings.get("comfyui_base_url"))
+    return _get_json(base_url, "/object_info", timeout=20)
+
+
+def discover_local_txt2img_profile(settings: dict) -> dict:
+    """Discover available core txt2img models/options without submitting a workflow."""
+    from .comfyui_profiles import inspect_local_txt2img_profile
+    return inspect_local_txt2img_profile(get_comfyui_object_info(settings))
+
+
 def check_comfyui_connection(settings: dict) -> dict:
     """Check the local ComfyUI API and discover node classes without running any workflow."""
     base_url = normalize_comfyui_base_url(settings.get("comfyui_base_url"))
     stats = _get_json(base_url, "/system_stats", timeout=8)
-    object_info = _get_json(base_url, "/object_info", timeout=20)
+    object_info = get_comfyui_object_info(settings)
     system = stats.get("system", {}) if isinstance(stats.get("system"), dict) else {}
     nodes = {
         "CheckpointLoaderSimple": "CheckpointLoaderSimple" in object_info,
