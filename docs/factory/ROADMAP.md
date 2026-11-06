@@ -1,7 +1,7 @@
 # План продукта и дорожная карта AI Video Factory
 
 **Статус документа:** основной рабочий план; обновлять при изменении решений и после каждого завершённого этапа.  
-**Актуальность:** 06.11.2026 · ветка `arena/c0c3d897-ai-first-steps` · код-коммит `4436091` (локальный dry-run txt2img профиль ComfyUI).
+**Актуальность:** 06.11.2026 · ветка `arena/c0c3d897-ai-first-steps` · код-коммит `335bb66` (локальный ComfyUI workflow JSON export, без отправки).
 
 Связанные документы: [инструкции инженеру Arena](ARENA_ENGINEER_INSTRUCTIONS.md), [инструкции локальному инженеру](LOCAL_ENGINEER_INSTRUCTIONS.md), [протокол взаимодействия](DEVELOPMENT_WORKFLOW.md), [план архитектуры](PLAN.md), [инструкция запуска](README.md), [локальные отчёты проверки](LOCAL_VALIDATION.md), [визуальные варианты F5](f5-visual-variants.md), [журнал и очередь F3](f3-action-queue.md).
 
