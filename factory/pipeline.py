@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,12 @@ from .actions import append_action_event, get_action
 from .jobs import (JobCancelled, checkpoint as job_checkpoint, create_job, ensure_job_enqueued,
                   get_job as _get_job, is_cancel_requested, list_jobs, persist_job, set_executor)
 from .storage import atomic_write_json, project_lock
+from .settings import agnes_image_runtime_config
+
+# Opt-in comes from local .env/system environment; a free-quota declaration is also required.
+_AGNES_IMAGE_RUNTIME_CONFIG = agnes_image_runtime_config()
+AGNES_IMAGE_RUNTIME_ENABLED = _AGNES_IMAGE_RUNTIME_CONFIG["agnes_image_runtime_enabled"]
+AGNES_IMAGE_BILLING_MODE = _AGNES_IMAGE_RUNTIME_CONFIG["agnes_image_billing_mode"]
 
 def _engine_module():
     path = ROOT / "tools" / "build_ffmpeg_video.py"
@@ -196,6 +203,9 @@ def plan(project: dict, stage: str, kind: str | None = None) -> dict:
         raise ValueError("Сначала подготовьте сценарий")
     image_generation = None
     provider = "local_pipeline"
+    cost_amount = 0
+    cost_known = True
+    privacy_scope = "local"
     if stage == "image":
         scene_id = str(kind or "")
         if int(project.get("schema_version", 1)) < 2:
@@ -210,20 +220,65 @@ def plan(project: dict, stage: str, kind: str | None = None) -> dict:
             raise ValueError("Сначала сохраните непустой prompt для этой сцены")
         from .settings import load_settings
         comfy_settings = load_settings()
-        model = str(comfy_settings.get("comfyui_local_model", "")).strip()
-        if not model:
-            raise ValueError("Сначала выберите checkpoint-модель в настройках ComfyUI")
-        seed = uuid.uuid4().int & 0xFFFFFFFF
-        image_generation = {"profile_id": "comfyui-core-txt2img-v1", "scene_id": scene_id,
-                            "model": model, "seed": seed, "width": 512, "height": 512,
-                            "steps": 20, "cfg": 7.0}
+        image_provider = str(comfy_settings.get("comfyui_image_provider", "local"))
+        seed_mask = 0xFFFFFFFFFFFFFFFF if image_provider == "agnes_image" else 0xFFFFFFFF
+        seed = uuid.uuid4().int & seed_mask
         units = total_units = 1
-        estimate = 60
-        provider = "comfyui_local"
-        message = (f"Создать 1 локальный вариант для сцены «{str(scene.get('title', scene_id))[:100]}» "
-                   f"моделью {model}, 512×512, 20 шагов · примерно от 60 сек (CPU может быть медленнее). "
-                   "В ComfyUI уйдёт только prompt/negative prompt; обработка локальная, стоимость 0 ₽. "
-                   "При ошибке нет облачного или платного fallback.")
+        if image_provider == "local":
+            model = str(comfy_settings.get("comfyui_local_model", "")).strip()
+            if not model:
+                raise ValueError("Сначала выберите checkpoint-модель в настройках ComfyUI")
+            image_generation = {"profile_id": "comfyui-core-txt2img-v1", "provider": "comfyui_local",
+                                "scene_id": scene_id,
+                                "model": model, "seed": seed, "width": 512, "height": 512,
+                                "steps": 20, "cfg": 7.0}
+            estimate = 60
+            provider = "comfyui_local"
+            message = (f"Создать 1 локальный вариант для сцены «{str(scene.get('title', scene_id))[:100]}» "
+                       f"моделью {model}, 512×512, 20 шагов · примерно от 60 сек (CPU может быть медленнее). "
+                       "В ComfyUI уйдёт только prompt/negative prompt; обработка локальная, стоимость 0 €. "
+                       "При ошибке нет облачного или платного fallback.")
+        elif image_provider == "agnes_image":
+            negative_prompt = str(visual.get("prompt", {}).get("negative", "")).strip()
+            if negative_prompt:
+                raise ValueError("Профиль AgnesImage не поддерживает negative prompt; перенесите ограничения в основной prompt")
+            if visual.get("reference_asset_ids"):
+                raise ValueError("Эта версия AgnesImage передаёт только текстовый prompt, без reference images")
+            from .comfyui import get_comfyui_object_info
+            from .comfyui_profiles import inspect_agnes_image_profile
+            try:
+                profile_info = inspect_agnes_image_profile(get_comfyui_object_info(comfy_settings))
+            except ValueError as exc:
+                raise ValueError(f"Локальный ComfyUI не подтвердил AgnesImage profile: {exc}") from exc
+            if "1K" not in profile_info["quality_options"]:
+                raise ValueError("В локальном /object_info нет консервативного Agnes quality 1K; смета не создана")
+            quality = "1K"
+            aspect_ratio = ("4:3" if "4:3" in profile_info["aspect_ratios"] else
+                            "auto" if "auto" in profile_info["aspect_ratios"] else
+                            profile_info["aspect_ratios"][0])
+            image_generation = {"profile_id": "comfyui-agnes-image-v1", "provider": "comfyui_agnes",
+                                "scene_id": scene_id,
+                                "seed": seed, "quality": quality, "aspect_ratio": aspect_ratio}
+            estimate = 60
+            provider = "comfyui_agnes"
+            privacy_scope = "cloud"
+            billing_mode = AGNES_IMAGE_BILLING_MODE
+            free_quota_mode = billing_mode == "free_quota"
+            cost_amount, cost_known = (0.0, True) if free_quota_mode else (None, False)
+            if free_quota_mode:
+                message = (f"Создать ровно 1 AgnesImage-вариант для сцены «{str(scene.get('title', scene_id))[:100]}» "
+                           f"(качество {quality}, {aspect_ratio}). Основной prompt, seed и параметры уйдут через локальный ComfyUI в Agnes; "
+                           "референсы и остальной проект не отправляются. Настроен бесплатный режим с суточной квотой: "
+                           "вызов расходует квоту, но не должен тарифицироваться; при отказе сервиса повтора и платного fallback нет. "
+                           "Остаток квоты проверяется сервисом при запуске. Это статическая смета; cloud-запрос произойдёт "
+                           "только после отдельного подтверждения.")
+            else:
+                message = (f"Создать ровно 1 AgnesImage-вариант для сцены «{str(scene.get('title', scene_id))[:100]}» "
+                           f"(качество {quality}, {aspect_ratio}). Основной prompt, seed и параметры уйдут через локальный ComfyUI в Agnes. "
+                           "Режим бесплатной квоты не настроен; runtime остаётся выключенным. "
+                           "Это статическая смета; cloud-запроса не будет.")
+        else:
+            raise ValueError("Неизвестный ComfyUI image provider")
     elif stage == "voice":
         from .settings import load_settings
         voice_provider = str(load_settings().get("voice_provider", "demo"))
@@ -255,14 +310,16 @@ def plan(project: dict, stage: str, kind: str | None = None) -> dict:
              "revision": project["revision"], "spec_hash": digest(spec), "input_fingerprint": input_fingerprint,
              "fingerprint_version": fingerprints.get("fingerprint_version"), "created_at": time.time(),
              "units": units, "total_units": total_units or units, "estimate_s": estimate,
-             "cost": 0, "cost_currency": "EUR", "provider": provider, "message": message,
+             "cost": cost_amount, "cost_known": cost_known, "cost_currency": "EUR",
+             "privacy_scope": privacy_scope, "provider": provider, "message": message,
+             **({"billing_mode": billing_mode} if provider == "comfyui_agnes" else {}),
              **({"generation": image_generation} if image_generation else {})}
     atomic_write_json(_plan_path(project["id"], plan_id), entry)
     append_action_event(project["id"], "action_proposed", actor="user", data={
         "action_id": action_id, "kind": "production", "stage": stage, "render_kind": kind,
         "revision": project["revision"], "input_fingerprint": input_fingerprint,
-        "provider": provider, "cost_estimate": {"amount": 0, "currency": "EUR"},
-        "privacy_scope": "local", "status": "proposed"})
+        "provider": provider, "cost_estimate": {"amount": cost_amount, "currency": "EUR", "known": cost_known},
+        "privacy_scope": privacy_scope, "status": "proposed"})
     return entry
 
 def _load_plan(project_id: str, plan_id: str) -> dict | None:
@@ -286,6 +343,8 @@ def run(project: dict, plan_id: str, stage: str, kind: str | None = None,
             raise ValueError("Замысел изменился или входные данные устарели после сметы. Проверьте обновлённую смету.")
         if stage in ("render", "image") and plan_entry.get("kind") != kind:
             raise ValueError("Тип/сцена не совпадает со сметой.")
+        if plan_entry.get("provider") == "comfyui_agnes" and not AGNES_IMAGE_RUNTIME_ENABLED:
+            raise ValueError("AgnesImage выключен. Для бесплатной квоты задайте AGNES_IMAGE_BILLING_MODE=free_quota и AGNES_IMAGE_RUNTIME_ENABLED=true в локальном .env, затем перезапустите Factory.")
         for existing in list_jobs(project["id"]):
             if existing.get("action_id") == plan_entry["action_id"]:
                 if existing.get("state") == "queued":
@@ -295,21 +354,42 @@ def run(project: dict, plan_id: str, stage: str, kind: str | None = None,
         if action["status"] != "proposed":
             raise ValueError("Действие уже подтверждено, отклонено или запущено")
         if stage == "image" and not isinstance(confirmation, dict):
-            raise ValueError("Для локальной генерации изображения требуется явное подтверждение")
+            raise ValueError("Для генерации изображения требуется явное подтверждение; cloud-профиль требует отдельного согласия")
         approval = confirmation or {"max_cost": 0, "currency": "EUR", "privacy_scope": "local", "consent": True}
+        expected_scope = "cloud" if plan_entry.get("provider") == "comfyui_agnes" else "local"
         try:
             max_cost = float(approval.get("max_cost", -1))
         except (TypeError, ValueError):
             max_cost = -1
-        if max_cost < float(plan_entry["cost"]) or str(approval.get("currency", "")).upper() != "EUR":
-            raise ValueError("Подтвердите действующий предел стоимости в EUR")
-        if approval.get("privacy_scope") != "local" or approval.get("consent") is not True:
-            raise ValueError("Для запуска требуется явное согласие на локальную обработку")
+        planned_cost = plan_entry.get("cost")
+        required_cost = float(planned_cost) if planned_cost is not None else 0.0
+        billing_mode = str(approval.get("billing_mode", ""))
+        free_quota_ack = (expected_scope == "cloud" and billing_mode == "free_quota"
+                          and AGNES_IMAGE_BILLING_MODE == "free_quota"
+                          and approval.get("daily_quota_ack") is True)
+        if (not math.isfinite(max_cost) or max_cost < required_cost
+                or str(approval.get("currency", "")).upper() != "EUR"):
+            raise ValueError("Подтверждение стоимости или режима квоты недействительно")
+        if expected_scope == "cloud" and not free_quota_ack and max_cost <= 0:
+            raise ValueError("Для облачного платного режима требуется положительный предел стоимости")
+        if expected_scope == "cloud" and free_quota_ack and max_cost != 0:
+            raise ValueError("В режиме бесплатной квоты стоимость должна быть 0 EUR; суточная квота не является денежным лимитом")
+        if approval.get("privacy_scope") != expected_scope or approval.get("consent") is not True:
+            raise ValueError(f"Для запуска требуется явное согласие на {expected_scope} обработку")
+        if expected_scope == "cloud" and approval.get("cloud_consent") is not True:
+            raise ValueError("Для Agnes требуется отдельное согласие на отправку prompt в облако")
         confirmed_at = time.time()
         confirmation_record = {"cost_ceiling": {"amount": max_cost, "currency": "EUR"},
-                               "privacy_scope": "local", "consent": True,
+                               "privacy_scope": expected_scope, "consent": True,
                                "confirmed_at": confirmed_at, "expires_at": confirmed_at + 365 * 24 * 3600,
                                "input_fingerprint": plan_entry["input_fingerprint"]}
+        if expected_scope == "cloud":
+            confirmation_record["cost_ceiling"]["enforced"] = False
+            confirmation_record["cloud_consent"] = True
+            confirmation_record["billing_mode"] = billing_mode
+            if free_quota_ack:
+                confirmation_record["daily_quota_ack"] = True
+                confirmation_record["quota_policy"] = "provider_daily"
         return create_job(project["id"], action_id=plan_entry["action_id"], job_type="pipeline",
                           payload={"plan_id": plan_id, "revision": project["revision"],
                                    "spec_hash": plan_entry["spec_hash"], "stage": stage, "kind": kind,
@@ -347,12 +427,18 @@ def _execute_job(job: dict) -> None:
     if int(project["revision"]) != int(payload.get("revision", -1)) or digest(project["spec"]) != payload.get("spec_hash"):
         raise ValueError("Входные данные изменились после подтверждения; подготовьте новую смету")
     stage = payload["stage"]
+    if (stage == "image" and payload.get("generation", {}).get("provider") == "comfyui_agnes"
+            and not AGNES_IMAGE_RUNTIME_ENABLED):
+        raise ValueError("AgnesImage выключен. Для бесплатной квоты задайте AGNES_IMAGE_BILLING_MODE=free_quota и AGNES_IMAGE_RUNTIME_ENABLED=true в локальном .env, затем перезапустите Factory.")
     if stage_input_fingerprint(project, stage, payload.get("kind")) != job.get("input_fingerprint"):
         raise ValueError("Входные данные изменились до запуска; подготовьте новую смету")
     approval = job.get("approval") or {}
-    if (approval.get("consent") is not True or approval.get("privacy_scope") != "local" or
-            float(approval.get("expires_at", 0)) <= time.time()):
-        raise ValueError("Для локальной задачи требуется актуальное подтверждение согласия")
+    expected_scope = "cloud" if payload.get("stage") == "image" and payload.get("generation", {}).get("provider") == "comfyui_agnes" else "local"
+    if (approval.get("consent") is not True or approval.get("privacy_scope") != expected_scope
+            or float(approval.get("expires_at", 0)) <= time.time()):
+        raise ValueError(f"Для задачи требуется актуальное подтверждение {expected_scope} обработки")
+    if expected_scope == "cloud" and approval.get("cloud_consent") is not True:
+        raise ValueError("Для Agnes требуется действующее отдельное cloud-согласие")
     if stage == "voice":
         _make_voice(project, job)
     elif stage == "frames":
@@ -617,11 +703,12 @@ def _make_voice(project: dict, job: dict) -> None:
     message = "Piper-озвучка готова. Речь обработана локально и подогнана под тайминг проекта." if voice_provider == "piper" else "Демо-озвучка готова. Это тишина с длительностью по тексту, не настоящий голос."
     _append(job, message, 95)
 
-def _validate_local_png(data: bytes, expected_width: int, expected_height: int) -> None:
+def _validate_local_png(data: bytes, expected_width: int | None = None,
+                        expected_height: int | None = None) -> None:
     import struct
     import zlib
 
-    if len(data) < 57 or not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 3_500_000:
+    if len(data) < 57 or not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 20_000_000:
         raise ValueError("ComfyUI вернул пустой, слишком большой или некорректный PNG")
     offset, header, image_data, ended = 8, None, bytearray(), False
     while offset + 12 <= len(data):
@@ -654,10 +741,12 @@ def _validate_local_png(data: bytes, expected_width: int, expected_height: int) 
         raise ValueError("PNG не содержит полного изображения")
     width, height, bit_depth, color_type, compression, filtering, interlace = header
     channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(color_type)
-    if (width != expected_width or height != expected_height or width <= 0 or height <= 0
-            or width > 8192 or height > 8192 or width * height > 40_000_000
+    if ((expected_width is not None and width != expected_width)
+            or (expected_height is not None and height != expected_height)
+            or width <= 0 or height <= 0 or width > 8192 or height > 8192
+            or width * height > 40_000_000
             or bit_depth != 8 or channels is None or compression != 0 or filtering != 0 or interlace != 0):
-        raise ValueError("PNG имеет размер или формат, не совпадающий с локальным workflow")
+        raise ValueError("PNG имеет размер или формат, не совпадающий с профилем ComfyUI")
     expected_raw_size = height * (1 + width * channels)
     inflater = zlib.decompressobj()
     try:
@@ -706,9 +795,24 @@ def _make_local_image_variant(project: dict, job: dict, scene_id: str) -> None:
         raise ValueError("Сначала сохраните непустой prompt для этой сцены")
     settings = load_settings()
     generation = job.get("payload", {}).get("generation", {})
-    model = str(generation.get("model", ""))
-    if model != str(settings.get("comfyui_local_model", "")):
-        raise ValueError("Выбранная ComfyUI-модель изменилась; создайте новый план")
+    provider = generation.get("provider", "comfyui_local")
+    if provider == "comfyui_agnes" and not AGNES_IMAGE_RUNTIME_ENABLED:
+        raise ValueError("AgnesImage выключен. Для бесплатной квоты задайте AGNES_IMAGE_BILLING_MODE=free_quota и AGNES_IMAGE_RUNTIME_ENABLED=true в локальном .env, затем перезапустите Factory.")
+    if provider == "comfyui_local":
+        model = str(generation.get("model", ""))
+        if model != str(settings.get("comfyui_local_model", "")):
+            raise ValueError("Выбранная ComfyUI-модель изменилась; создайте новый план")
+    elif provider == "comfyui_agnes":
+        if settings.get("comfyui_image_provider") != "agnes_image":
+            raise ValueError("Профиль AgnesImage изменился после подтверждения; создайте новый план")
+        if negative_prompt:
+            raise ValueError("AgnesImage profile не передаёт negative prompt; обновите prompt и подтвердите новую смету")
+        if visual.get("reference_asset_ids"):
+            raise ValueError("AgnesImage profile не передаёт reference images")
+        if generation.get("profile_id") != "comfyui-agnes-image-v1":
+            raise ValueError("Неизвестная версия профиля AgnesImage")
+    else:
+        raise ValueError("Неизвестный image provider; workflow не будет отправлен")
 
     def report_progress(message: str) -> None:
         job["message"] = message
@@ -718,38 +822,71 @@ def _make_local_image_variant(project: dict, job: dict, scene_id: str) -> None:
         persist_job(job)
 
     saved_checkpoint = job.get("checkpoint", {})
-    if saved_checkpoint.get("stage") == "comfyui_submission_in_flight":
-        raise ValueError("Предыдущая отправка ComfyUI имеет неизвестный результат; проверьте локальную очередь, повторной отправки не будет")
-    image_bytes, metadata = generate_local_txt2img(
-        settings, model=model, prompt=text_prompt, negative_prompt=negative_prompt,
-        seed=int(generation["seed"]), width=int(generation["width"]),
-        height=int(generation["height"]), steps=int(generation["steps"]),
-        cfg=float(generation["cfg"]),
-        cancel_requested=lambda: is_cancel_requested(project["id"], job["id"]),
-        progress=report_progress,
-        on_submitting=lambda: job_checkpoint(job, {
-            "stage": "comfyui_submission_in_flight", "created_at": time.time()}),
-        on_submitted=lambda prompt_id: job_checkpoint(job, {
-            "stage": "comfyui_prompt_submitted", "prompt_id": prompt_id,
-            "created_at": time.time()}),
-        resume_prompt_id=(job.get("checkpoint", {}).get("prompt_id")
-                          if job.get("checkpoint", {}).get("stage") == "comfyui_prompt_submitted" else None),
-    )
+    if provider == "comfyui_agnes":
+        approval = job.get("approval", {})
+        if (approval.get("privacy_scope") != "cloud" or approval.get("consent") is not True
+                or approval.get("cloud_consent") is not True):
+            raise ValueError("Нет сохранённого отдельного согласия на Agnes cloud request")
+        saved_checkpoint = job.get("checkpoint", {})
+        if saved_checkpoint.get("stage") == "comfyui_submission_in_flight":
+            raise ValueError("Результат предыдущей отправки Agnes неизвестен; проверьте очередь, повторной отправки не будет")
+        if saved_checkpoint.get("stage") not in (None, "comfyui_prompt_submitted"):
+            raise ValueError("Состояние предыдущего Agnes workflow неизвестно; повторной отправки не будет")
+        from .comfyui import generate_agnes_image
+        image_bytes, metadata = generate_agnes_image(
+            settings, prompt=text_prompt, seed=int(generation["seed"]),
+            quality=str(generation["quality"]), aspect_ratio=str(generation["aspect_ratio"]),
+            cancel_requested=lambda: is_cancel_requested(project["id"], job["id"]),
+            progress=report_progress,
+            on_submitting=lambda: job_checkpoint(job, {
+                "stage": "comfyui_submission_in_flight", "created_at": time.time(),
+                "provider": "comfyui_agnes"}),
+            on_submitted=lambda prompt_id: job_checkpoint(job, {
+                "stage": "comfyui_prompt_submitted", "prompt_id": prompt_id,
+                "created_at": time.time(), "provider": "comfyui_agnes"}),
+            resume_prompt_id=(saved_checkpoint.get("prompt_id")
+                              if saved_checkpoint.get("stage") == "comfyui_prompt_submitted" else None),
+        )
+    else:
+        saved_checkpoint = job.get("checkpoint", {})
+        if saved_checkpoint.get("stage") == "comfyui_submission_in_flight":
+            raise ValueError("Предыдущая отправка ComfyUI имеет неизвестный результат; проверьте локальную очередь, повторной отправки не будет")
+        image_bytes, metadata = generate_local_txt2img(
+            settings, model=model, prompt=text_prompt, negative_prompt=negative_prompt,
+            seed=int(generation["seed"]), width=int(generation["width"]),
+            height=int(generation["height"]), steps=int(generation["steps"]),
+            cfg=float(generation["cfg"]),
+            cancel_requested=lambda: is_cancel_requested(project["id"], job["id"]),
+            progress=report_progress,
+            on_submitting=lambda: job_checkpoint(job, {
+                "stage": "comfyui_submission_in_flight", "created_at": time.time()}),
+            on_submitted=lambda prompt_id: job_checkpoint(job, {
+                "stage": "comfyui_prompt_submitted", "prompt_id": prompt_id,
+                "created_at": time.time()}),
+            resume_prompt_id=(saved_checkpoint.get("prompt_id")
+                              if saved_checkpoint.get("stage") == "comfyui_prompt_submitted" else None),
+        )
     if is_cancel_requested(project["id"], job["id"]):
         raise JobCancelled()
-    _validate_local_png(image_bytes, int(generation["width"]), int(generation["height"]))
+    if provider == "comfyui_agnes":
+        _validate_local_png(image_bytes)
+    else:
+        _validate_local_png(image_bytes, int(generation["width"]), int(generation["height"]))
     if is_cancel_requested(project["id"], job["id"]):
         raise JobCancelled()
     result = create_visual_variant(
         project["id"], scene_id, image_bytes, expected_revision=int(job["payload"]["revision"]),
         mime="image/png", extension=".png", prompt={"text": text_prompt, "negative": negative_prompt},
-        source="generated", provenance="comfyui_local_txt2img",
-        metadata={"action_id": job["action_id"], "model": model,
-                  "parameters": {key: metadata[key] for key in
-                    ("seed", "steps", "cfg", "width", "height", "sampler", "scheduler")},
-                  "created_by": "comfyui_local"},
+        source="generated", provenance=("comfyui_agnes_image" if provider == "comfyui_agnes" else "comfyui_local_txt2img"),
+        metadata={"action_id": job["action_id"],
+                  "model": model if provider == "comfyui_local" else None,
+                  "parameters": (metadata if provider == "comfyui_agnes" else
+                                 {key: metadata[key] for key in
+                                  ("seed", "steps", "cfg", "width", "height", "sampler", "scheduler")}),
+                  "created_by": provider},
     )
-    message = f"Локальный вариант сохранён в истории: {result['variant']['asset_id']} (не выбран)"
+    label = "AgnesImage" if provider == "comfyui_agnes" else "Локальный"
+    message = f"{label} вариант сохранён в истории: {result['variant']['asset_id']} (не выбран)"
     job["message"] = message
     job.setdefault("log", []).append(message)
     job["log"] = job["log"][-40:]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import threading
@@ -157,11 +158,16 @@ def _validate_approval(approval: dict | None, input_fingerprint: str) -> dict:
         raise ValueError("Для очереди требуется действующий предел стоимости")
     currency = str(ceiling.get("currency", "")).upper()
     scope = approval.get("privacy_scope")
-    if amount < 0 or currency not in ("RUB", "EUR", "USD") or expires_at <= time.time():
+    if (not math.isfinite(amount) or not math.isfinite(expires_at) or amount < 0
+            or currency not in ("RUB", "EUR", "USD") or expires_at <= time.time()):
         raise ValueError("Предел стоимости или срок подтверждения недействителен")
     if scope == "cloud":
-        if amount <= 0 or approval.get("cloud_consent") is not True:
-            raise ValueError("Облачная задача требует положительного лимита и отдельного согласия")
+        free_quota = (approval.get("billing_mode") == "free_quota"
+                      and approval.get("quota_policy") == "provider_daily"
+                      and approval.get("daily_quota_ack") is True and amount == 0)
+        if (approval.get("cloud_consent") is not True
+                or (amount <= 0 and not free_quota)):
+            raise ValueError("Облачная задача требует отдельного согласия и либо денежного лимита, либо подтверждения бесплатной квоты")
     elif scope != "local":
         raise ValueError("Укажите локальный или облачный scope согласия")
     return approval

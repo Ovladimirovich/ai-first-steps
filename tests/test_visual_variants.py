@@ -102,6 +102,63 @@ class VisualVariantTests(unittest.TestCase):
         self.assertEqual(planned["generation"]["scene_id"], self.scene_id)
         self.assertIn("нет облачного", planned["message"])
 
+    def test_agnes_image_plan_is_static_and_runtime_submission_is_hard_blocked(self):
+        update_visual_prompt(self.project["id"], self.scene_id, {
+            "expected_revision": self.project["revision"], "prompt": "A blue paper boat on a pond",
+            "negative_prompt": "", "description": "", "reference_asset_ids": [],
+        })
+        current = load_project(self.project["id"])
+        settings = {"comfyui_image_provider": "agnes_image", "comfyui_base_url": "http://127.0.0.1:8188"}
+        profile = {"quality_options": ["1K", "2K", "3K", "4K"],
+                   "aspect_ratios": ["auto", "1:1", "4:3", "16:9"]}
+        with patch("factory.settings.load_settings", return_value=settings), \
+             patch("factory.comfyui.get_comfyui_object_info", return_value={"mock": {}}), \
+             patch("factory.comfyui_profiles.inspect_agnes_image_profile", return_value=profile):
+            from factory.pipeline import plan, run
+            planned = plan(current, "image", self.scene_id)
+            self.assertIsNone(planned["cost"])
+            self.assertFalse(planned["cost_known"])
+            self.assertEqual(planned["privacy_scope"], "cloud")
+            self.assertEqual(planned["generation"]["quality"], "1K")
+            self.assertEqual(planned["generation"]["aspect_ratio"], "4:3")
+            confirmation = {"max_cost": 1, "currency": "EUR", "privacy_scope": "cloud",
+                            "consent": True, "cloud_consent": True}
+            with patch("factory.pipeline.create_job") as create_job:
+                with self.assertRaisesRegex(ValueError, "выключен"):
+                    run(current, planned["id"], "image", self.scene_id, confirmation)
+            create_job.assert_not_called()
+
+    def test_agnes_free_quota_plan_runs_with_zero_cost_and_explicit_quota_consent(self):
+        update_visual_prompt(self.project["id"], self.scene_id, {
+            "expected_revision": self.project["revision"], "prompt": "A blue paper boat on a pond",
+            "negative_prompt": "", "description": "", "reference_asset_ids": [],
+        })
+        current = load_project(self.project["id"])
+        settings = {"comfyui_image_provider": "agnes_image", "comfyui_base_url": "http://127.0.0.1:8188"}
+        profile = {"quality_options": ["1K", "2K", "3K", "4K"],
+                   "aspect_ratios": ["auto", "1:1", "4:3", "16:9"]}
+        with patch("factory.settings.load_settings", return_value=settings), \
+             patch("factory.comfyui.get_comfyui_object_info", return_value={"mock": {}}), \
+             patch("factory.comfyui_profiles.inspect_agnes_image_profile", return_value=profile), \
+             patch("factory.pipeline.AGNES_IMAGE_RUNTIME_ENABLED", True), \
+             patch("factory.pipeline.AGNES_IMAGE_BILLING_MODE", "free_quota"):
+            from factory.pipeline import plan, run
+            planned = plan(current, "image", self.scene_id)
+            self.assertEqual(planned["cost"], 0.0)
+            self.assertTrue(planned["cost_known"])
+            self.assertEqual(planned["billing_mode"], "free_quota")
+            confirmation = {"max_cost": 0, "currency": "EUR", "billing_mode": "free_quota",
+                            "daily_quota_ack": True, "privacy_scope": "cloud",
+                            "consent": True, "cloud_consent": True}
+            with patch("factory.pipeline.create_job", return_value={"id": "queued-job"}) as create_job:
+                result = run(current, planned["id"], "image", self.scene_id, confirmation)
+        self.assertEqual(result["id"], "queued-job")
+        approval = create_job.call_args.kwargs["approval"]
+        self.assertEqual(approval["cost_ceiling"]["amount"], 0)
+        self.assertFalse(approval["cost_ceiling"]["enforced"])
+        self.assertEqual(approval["quota_policy"], "provider_daily")
+        self.assertTrue(approval["daily_quota_ack"])
+
     def test_local_image_job_registers_generated_png_as_unselected_candidate(self):
         update_visual_prompt(self.project["id"], self.scene_id, {
             "expected_revision": self.project["revision"], "prompt": "Кораблик на пруду",
@@ -138,6 +195,28 @@ class VisualVariantTests(unittest.TestCase):
         self.assertEqual(job["checkpoint"]["stage"], "comfyui_prompt_submitted")
         self.assertIn("(не выбран)", job["message"])
 
+    def test_agnes_worker_is_blocked_before_any_comfyui_submission(self):
+        update_visual_prompt(self.project["id"], self.scene_id, {
+            "expected_revision": self.project["revision"], "prompt": "A blue paper boat on a pond",
+            "negative_prompt": "", "description": "", "reference_asset_ids": [],
+        })
+        current = load_project(self.project["id"])
+        job = {"id": "agnes-image-job", "action_id": "agnes-image-action",
+               "project_id": self.project["id"],
+               "payload": {"revision": current["revision"], "generation": {
+                   "profile_id": "comfyui-agnes-image-v1", "provider": "comfyui_agnes",
+                   "seed": 42, "quality": "1K", "aspect_ratio": "4:3"}},
+               "approval": {"privacy_scope": "cloud", "consent": True, "cloud_consent": True},
+               "checkpoint": {}, "input_fingerprint": "agnes-fingerprint", "progress": 0, "log": []}
+        with patch("factory.settings.load_settings", return_value={
+                "comfyui_image_provider": "agnes_image"}), \
+             patch("factory.comfyui.generate_agnes_image") as generate, \
+             patch("factory.pipeline.is_cancel_requested", return_value=False):
+            from factory.pipeline import _make_local_image_variant
+            with self.assertRaisesRegex(ValueError, "выключен"):
+                _make_local_image_variant(current, job, self.scene_id)
+        generate.assert_not_called()
+        self.assertEqual(list_visual_variants(self.project["id"], self.scene_id)["variants"], [])
     def test_interrupted_unknown_comfy_submission_is_never_automatically_repeated(self):
         update_visual_prompt(self.project["id"], self.scene_id, {
             "expected_revision": self.project["revision"], "prompt": "Кораблик на пруду",

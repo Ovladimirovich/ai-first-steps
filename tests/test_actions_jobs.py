@@ -114,6 +114,19 @@ class ActionLifecycleTests(_TempProjects):
         self.assertTrue(apply_action(project["id"], proposal["action_id"], {
             "input_fingerprint": proposal["input_fingerprint"]})["already_applied"])
 
+    def test_free_quota_cloud_approval_records_daily_quota_without_fake_money_cap(self):
+        from factory.jobs import _validate_approval
+        approval = {"input_fingerprint": "fingerprint", "consent": True,
+                    "privacy_scope": "cloud", "cloud_consent": True,
+                    "billing_mode": "free_quota", "quota_policy": "provider_daily",
+                    "daily_quota_ack": True,
+                    "cost_ceiling": {"amount": 0, "currency": "EUR", "enforced": False},
+                    "expires_at": time.time() + 60}
+        self.assertEqual(_validate_approval(approval, "fingerprint"), approval)
+        invalid = {**approval, "daily_quota_ack": False}
+        with self.assertRaisesRegex(ValueError, "бесплатной квоты"):
+            _validate_approval(invalid, "fingerprint")
+
     def test_paid_cloud_job_requires_consent_and_cost_ceiling(self):
         from factory import action_service
         project = create_project({"theme": "Облачный черновик", "duration": 30})

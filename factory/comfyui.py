@@ -224,6 +224,92 @@ def generate_local_txt2img(settings: dict, *, model: str, prompt: str, negative_
     raise ComfyUIError("Локальный workflow не завершился за отведённое время; проверьте очередь ComfyUI")
 
 
+def generate_agnes_image(settings: dict, *, prompt: str, seed: int, quality: str = "1K",
+                         aspect_ratio: str = "4:3", cancel_requested=lambda: False,
+                         progress=lambda _message: None, on_submitting=lambda: None,
+                         on_submitted=lambda _prompt_id: None,
+                         resume_prompt_id: str | None = None, timeout: float = 3600,
+                         poll_interval: float = 1.5) -> tuple[bytes, dict]:
+    """Run one explicitly consented AgnesImage T2I workflow through local ComfyUI.
+
+    The cloud call is performed by the configured Agnes custom node, not by Arena or this
+    process. This helper has no alternate provider, retry, or paid fallback.
+    """
+    from .comfyui_profiles import build_agnes_image_workflow
+    from .jobs import JobCancelled
+    from .pipeline import AGNES_IMAGE_RUNTIME_ENABLED
+
+    if not AGNES_IMAGE_RUNTIME_ENABLED:
+        raise ComfyUIError("AgnesImage выключен. Для бесплатной квоты задайте AGNES_IMAGE_BILLING_MODE=free_quota и AGNES_IMAGE_RUNTIME_ENABLED=true в локальном .env, затем перезапустите Factory.")
+    base_url = normalize_comfyui_base_url(settings.get("comfyui_base_url"))
+    object_info = _get_json(base_url, "/object_info", timeout=20)
+    built = build_agnes_image_workflow(object_info, prompt=prompt, seed=seed,
+                                       quality=quality, aspect_ratio=aspect_ratio)
+    prompt_id = str(resume_prompt_id or "")
+    if cancel_requested() and not prompt_id:
+        raise JobCancelled()
+    if not prompt_id:
+        on_submitting()
+        if cancel_requested():
+            raise JobCancelled()
+        response = _post_json(base_url, "/prompt", {
+            "prompt": built["prompt"], "client_id": uuid.uuid4().hex,
+        })
+        if response.get("node_errors"):
+            raise ComfyUIError("ComfyUI отклонил AgnesImage graph по проверке узлов; сверьте локальный /object_info")
+        prompt_id = str(response.get("prompt_id", ""))
+        if not prompt_id or len(prompt_id) > 128 or not all(c.isalnum() or c in "-_" for c in prompt_id):
+            raise ComfyUIError("ComfyUI не вернул корректный prompt_id для AgnesImage")
+        on_submitted(prompt_id)
+    elif len(prompt_id) > 128 or not all(c.isalnum() or c in "-_" for c in prompt_id):
+        raise ComfyUIError("Сохранённый AgnesImage prompt_id некорректен; workflow не будет отправлен повторно")
+
+    started = time.monotonic()
+    last_progress = 0.0
+    while time.monotonic() - started < timeout:
+        elapsed = time.monotonic() - started
+        if cancel_requested():
+            queue_data = _get_json(base_url, "/queue", timeout=10)
+            if _queue_contains(queue_data, prompt_id, "queue_pending"):
+                _post_json(base_url, "/queue", {"delete": [prompt_id]}, timeout=10)
+                raise JobCancelled()
+        history = _get_json(base_url, "/history/" + urllib.parse.quote(prompt_id, safe=""), timeout=15)
+        entry = history.get(prompt_id) if isinstance(history, dict) else None
+        if isinstance(entry, dict):
+            status = entry.get("status", {}) if isinstance(entry.get("status"), dict) else {}
+            if status.get("status_str") == "error" or entry.get("outputs") is None:
+                raise ComfyUIError("AgnesImage workflow завершился ошибкой; проверьте локальную очередь ComfyUI")
+            output = entry.get("outputs", {}).get(built["output_node_id"], {})
+            images = output.get("images", []) if isinstance(output, dict) else []
+            if images:
+                image = images[0]
+                if not isinstance(image, dict) or not image.get("filename"):
+                    raise ComfyUIError("ComfyUI завершил AgnesImage без корректного файла изображения")
+                filename = str(image["filename"])
+                subfolder = str(image.get("subfolder", ""))
+                image_type = str(image.get("type", "temp"))
+                if (len(filename) > 255 or filename in (".", "..") or "/" in filename or "\\" in filename
+                        or any(ord(char) < 32 for char in filename) or subfolder not in ("",)
+                        or image_type not in ("temp", "output")):
+                    raise ComfyUIError("ComfyUI вернул небезопасный путь к результату AgnesImage")
+                query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": image_type})
+                data = _get_bytes(base_url, "/view?" + query, limit=20 * 1024 * 1024)
+                if cancel_requested():
+                    raise JobCancelled()
+                return data, {"prompt_id": prompt_id, "elapsed_s": round(elapsed, 2),
+                              "profile_id": built["profile_id"], "seed": seed,
+                              "quality": quality, "aspect_ratio": aspect_ratio,
+                              "output_node_id": built["output_node_id"]}
+        if elapsed - last_progress >= 4:
+            progress("Ожидание локального ComfyUI; он выполняет один запрос AgnesImage")
+            last_progress = elapsed
+        time.sleep(max(0.1, min(float(poll_interval), 5.0)))
+    queue_data = _get_json(base_url, "/queue", timeout=10)
+    if _queue_contains(queue_data, prompt_id, "queue_pending"):
+        _post_json(base_url, "/queue", {"delete": [prompt_id]}, timeout=10)
+    raise ComfyUIError("AgnesImage workflow не завершился за отведённое время; проверьте локальную очередь")
+
+
 def check_comfyui_connection(settings: dict) -> dict:
     """Check the local ComfyUI API and discover node classes without running any workflow."""
     base_url = normalize_comfyui_base_url(settings.get("comfyui_base_url"))

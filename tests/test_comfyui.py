@@ -157,6 +157,34 @@ class ComfyUITests(unittest.TestCase):
                 app_server.server_close()
                 app_thread.join(timeout=2)
 
+    def test_agnes_profile_api_only_inspects_schema_and_never_submits_workflow(self):
+        info = {
+            "AgnesImage": {"input": {"required": {
+                "prompt": ["STRING"], "quality": ["COMBO", {"options": ["1K", "2K"]}],
+                "aspect_ratio": ["COMBO", {"options": ["1:1", "4:3", "16:9"]}], "seed": ["INT"],
+            }}, "output": ["IMAGE"], "output_name": ["images"]},
+            "PreviewImage": {"input": {"required": {"images": ["IMAGE"]},
+                                         "hidden": {"prompt": ["PROMPT"],
+                                                    "extra_pnginfo": ["EXTRA_PNGINFO"]}},
+                             "output_node": True},
+        }
+        with patch("factory.server.load_settings", return_value={"comfyui_base_url": self.base_url}), \
+             patch("factory.server.get_comfyui_object_info", return_value=info):
+            app_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            app_thread = Thread(target=app_server.serve_forever, daemon=True)
+            app_thread.start()
+            try:
+                with urlopen(f"http://127.0.0.1:{app_server.server_port}/api/settings/comfyui/agnes-profile") as response:
+                    result = json.loads(response.read())
+                self.assertEqual(result["profile_id"], "comfyui-agnes-image-v1")
+                self.assertEqual(result["quality_options"], ["1K", "2K"])
+                self.assertTrue(result["available"])
+                self.assertFalse(any(method == "POST" for method, _ in FakeComfyUIHandler.requests))
+            finally:
+                app_server.shutdown()
+                app_server.server_close()
+                app_thread.join(timeout=2)
+
     def test_local_workflow_export_returns_graph_without_submitting_it(self):
         settings = {"comfyui_base_url": self.base_url, "comfyui_local_model": "model-a.safetensors"}
         with patch("factory.server.load_settings", return_value=settings):
@@ -240,12 +268,17 @@ class ComfyUITests(unittest.TestCase):
              patch("factory.settings.SETTINGS_PATH", Path(tmp) / "settings.json"), \
              patch("factory.settings.ENV_PATH", Path(tmp) / "missing.env"):
             saved = save_settings({"comfyui_base_url": self.base_url,
-                                   "comfyui_local_model": "model-a.safetensors"})
+                                   "comfyui_local_model": "model-a.safetensors",
+                                   "comfyui_image_provider": "agnes_image"})
             self.assertEqual(saved["comfyui_base_url"], self.base_url)
             self.assertEqual(saved["comfyui_local_model"], "model-a.safetensors")
+            self.assertEqual(saved["comfyui_image_provider"], "agnes_image")
             persisted = json.loads((Path(tmp) / "settings.json").read_text(encoding="utf-8"))
             self.assertEqual(persisted["comfyui_base_url"], self.base_url)
             self.assertEqual(persisted["comfyui_local_model"], "model-a.safetensors")
+            self.assertEqual(persisted["comfyui_image_provider"], "agnes_image")
+            with self.assertRaises(ValueError):
+                save_settings({"comfyui_image_provider": "unknown"})
             with self.assertRaises(ComfyUIError):
                 save_settings({"comfyui_base_url": "http://example.com:8188"})
 

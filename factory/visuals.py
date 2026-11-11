@@ -183,8 +183,9 @@ def create_visual_variant(project_id: str, scene_id: str, image_bytes: bytes, *,
         raise ValueError("Сцена не найдена в проекте")
     if mime not in ("image/png", "image/jpeg", "image/webp"):
         raise ValueError("Поддерживаются только PNG, JPG и WebP")
-    if not image_bytes or len(image_bytes) > 3_500_000:
-        raise ValueError("Размер варианта изображения должен быть от 1 байта до 3,5 МБ")
+    size_limit = 20_000_000 if source == "generated" else 3_500_000
+    if not image_bytes or len(image_bytes) > size_limit:
+        raise ValueError(f"Размер варианта изображения должен быть от 1 байта до {size_limit // 1_000_000} МБ")
     prompt = prompt if isinstance(prompt, dict) else {}
     prompt_record = {"text": _clean_prompt(prompt.get("text", ""), "prompt"),
                      "negative": _clean_prompt(prompt.get("negative", ""), "negative_prompt")}

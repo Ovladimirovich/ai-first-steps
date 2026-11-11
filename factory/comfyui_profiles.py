@@ -9,6 +9,7 @@ from typing import Any
 
 
 PROFILE_ID = "comfyui-core-txt2img-v1"
+AGNES_IMAGE_PROFILE_ID = "comfyui-agnes-image-v1"
 
 _REQUIRED_NODES = (
     "CheckpointLoaderSimple", "CLIPTextEncode", "EmptyLatentImage", "KSampler",
@@ -44,6 +45,12 @@ def _choices(node: dict, name: str) -> list[str] | None:
     options = definition[0]
     if isinstance(options, list):
         return [str(item) for item in options]
+    metadata = definition[1] if len(definition) > 1 and isinstance(definition[1], dict) else {}
+    # Newer ComfyUI schemas represent enum widgets as COMBO + metadata.options;
+    # older /object_info versions expose the options list directly as definition[0].
+    combo_options = metadata.get("options") if str(options).upper() == "COMBO" else None
+    if isinstance(combo_options, list):
+        return [str(item) for item in combo_options]
     return None
 
 
@@ -198,3 +205,84 @@ def build_local_txt2img_workflow(object_info: dict, *, model: str, prompt: str,
     for name, value in (("steps", steps), ("cfg", cfg), ("seed", seed), ("denoise", 1.0)):
         _bounded_number(sampler_node, name, value)
     return {"profile_id": PROFILE_ID, "prompt": graph}
+
+
+def inspect_agnes_image_profile(object_info: dict) -> dict:
+    """Inspect the candidate AgnesImage T2I path against the current local /object_info."""
+    if not isinstance(object_info, dict):
+        raise WorkflowProfileError("/object_info должен содержать JSON-объект")
+    image_node = _node_info(object_info, "AgnesImage")
+    preview_node = _node_info(object_info, "PreviewImage")
+    expected_image_inputs = {"prompt", "quality", "aspect_ratio", "seed"}
+    required_image_inputs = image_node.get("input", {}).get("required", {})
+    if not isinstance(required_image_inputs, dict) or set(required_image_inputs) != expected_image_inputs:
+        raise WorkflowProfileError("У AgnesImage есть неподдерживаемые обязательные inputs; profile закрыт до проверки схемы")
+    for name in expected_image_inputs:
+        _input_def(image_node, name)
+    preview_inputs = preview_node.get("input", {})
+    required_preview_inputs = preview_inputs.get("required", {}) if isinstance(preview_inputs, dict) else {}
+    if not isinstance(required_preview_inputs, dict) or set(required_preview_inputs) != {"images"}:
+        raise WorkflowProfileError("У PreviewImage есть неподдерживаемые обязательные inputs")
+    hidden_preview_inputs = preview_inputs.get("hidden", {}) if isinstance(preview_inputs, dict) else {}
+    if (not isinstance(hidden_preview_inputs, dict)
+            or set(hidden_preview_inputs) - {"prompt", "extra_pnginfo"}):
+        raise WorkflowProfileError("У PreviewImage есть неподдерживаемые hidden inputs")
+    _input_def(preview_node, "images")
+    if preview_node.get("output_node") is not True:
+        raise WorkflowProfileError("PreviewImage не подтверждён как выходной узел в /object_info")
+    _output_index(image_node, "images")
+    quality = _choices(image_node, "quality") or []
+    aspect_ratios = _choices(image_node, "aspect_ratio") or []
+    if not quality or not aspect_ratios:
+        raise WorkflowProfileError("AgnesImage не сообщил варианты качества или aspect ratio")
+    return {"profile_id": AGNES_IMAGE_PROFILE_ID, "available": True,
+            "quality_options": quality, "aspect_ratios": aspect_ratios,
+            "supports_negative_prompt": False, "supports_reference_images": "images" in image_node.get("input", {}).get("optional", {})}
+
+
+def build_agnes_image_workflow(object_info: dict, *, prompt: str, seed: int,
+                               quality: str = "1K", aspect_ratio: str = "16:9") -> dict:
+    """Build the confirmed text-to-image branch using live AgnesImage / PreviewImage schemas.
+
+    The supplied UI workflow is an editor-format graph; this emits ComfyUI API-format nodes.
+    AgnesText and the separate image-fusion branch are deliberately not included.
+    """
+    inspected = inspect_agnes_image_profile(object_info)
+    image_node = _node_info(object_info, "AgnesImage")
+    preview_node = _node_info(object_info, "PreviewImage")
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
+        raise WorkflowProfileError("Для Agnes укажите prompt длиной от 1 до 4000 символов")
+    if type(seed) is not int or not 0 <= seed <= 0xFFFFFFFFFFFFFFFF:
+        raise WorkflowProfileError("Seed должен быть целым числом от 0 до 2^64−1")
+    if quality not in inspected["quality_options"]:
+        raise WorkflowProfileError("Выбранное качество отсутствует в схеме AgnesImage")
+    if aspect_ratio not in inspected["aspect_ratios"]:
+        raise WorkflowProfileError("Выбранное соотношение сторон отсутствует в схеме AgnesImage")
+    prompt_input = _input_def(image_node, "prompt")
+    prompt_meta = prompt_input[1] if len(prompt_input) > 1 and isinstance(prompt_input[1], dict) else {}
+    try:
+        prompt_max = int(prompt_meta.get("max_length", 4000))
+    except (TypeError, ValueError):
+        prompt_max = 4000
+    if len(prompt) > prompt_max:
+        raise WorkflowProfileError("Prompt длиннее лимита AgnesImage из /object_info")
+    seed_input = _input_def(image_node, "seed")
+    seed_meta = seed_input[1] if len(seed_input) > 1 and isinstance(seed_input[1], dict) else {}
+    if seed < int(seed_meta.get("min", 0)) or seed > int(seed_meta.get("max", 0xFFFFFFFFFFFFFFFF)):
+        raise WorkflowProfileError("Seed выходит за диапазон AgnesImage из /object_info")
+    image_output = _output_index(image_node, "images")
+    _input_def(preview_node, "images")
+    preview_inputs = {"images": ["13", image_output]}
+    hidden_preview = preview_node.get("input", {}).get("hidden", {})
+    for hidden_name in ("prompt", "extra_pnginfo"):
+        if hidden_name in hidden_preview:
+            preview_inputs[hidden_name] = None
+    graph = {
+        "13": {"class_type": "AgnesImage", "inputs": {
+            "prompt": prompt.strip(), "quality": quality,
+            "aspect_ratio": aspect_ratio, "seed": seed,
+        }},
+        "3": {"class_type": "PreviewImage", "inputs": preview_inputs},
+    }
+    return {"profile_id": AGNES_IMAGE_PROFILE_ID, "prompt": graph,
+            "output_node_id": "3", "quality": quality, "aspect_ratio": aspect_ratio}

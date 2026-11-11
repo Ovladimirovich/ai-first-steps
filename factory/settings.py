@@ -19,6 +19,7 @@ DEFAULT_SETTINGS = {
     "gigachat_models": [],
     "comfyui_base_url": "http://127.0.0.1:8188",
     "comfyui_local_model": "",
+    "comfyui_image_provider": "local",
 }
 SETTINGS_PATH = ROOT / ".factory" / "settings.json"
 ENV_PATH = ROOT / ".env"
@@ -48,6 +49,18 @@ def gigachat_credentials() -> dict:
             "ca_bundle": env.get("GIGACHAT_CA_BUNDLE", "")}
 
 
+def agnes_image_runtime_config() -> dict:
+    env = _local_env()
+    enabled_value = str(env.get("AGNES_IMAGE_RUNTIME_ENABLED", "")).strip().lower()
+    requested = enabled_value in ("1", "true", "yes", "on")
+    billing_mode = str(env.get("AGNES_IMAGE_BILLING_MODE", "unknown")).strip().lower()
+    # Fail closed: this integration only accepts the user's explicitly configured free quota mode.
+    enabled = requested and billing_mode == "free_quota"
+    return {"agnes_image_runtime_enabled": enabled,
+            "agnes_image_billing_mode": billing_mode,
+            "agnes_image_runtime_requested": requested}
+
+
 def load_settings() -> dict:
     try:
         stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -69,6 +82,7 @@ def load_settings() -> dict:
     result["piper_model_h2"] = env.get("PIPER_MODEL_H2", result["piper_model_h2"])
     result["comfyui_base_url"] = env.get("COMFYUI_BASE_URL", result["comfyui_base_url"])
     result["gigachat_credentials_configured"] = bool(env.get("GIGACHAT_CLIENT_ID") and env.get("GIGACHAT_CLIENT_SECRET"))
+    result.update(agnes_image_runtime_config())
     return result
 
 
@@ -93,8 +107,12 @@ def save_settings(value: dict) -> dict:
     from .comfyui import normalize_comfyui_base_url
     comfyui_base_url = normalize_comfyui_base_url(value.get("comfyui_base_url", current.get("comfyui_base_url")))
     comfyui_local_model = str(value.get("comfyui_local_model", current.get("comfyui_local_model", ""))).strip()[:512]
+    comfyui_image_provider = str(value.get("comfyui_image_provider", current.get("comfyui_image_provider", "local"))).strip()
+    if comfyui_image_provider not in ("local", "agnes_image"):
+        raise ValueError("Выберите локальный ComfyUI или профиль AgnesImage")
     persisted = {"text_provider": provider, "llama_cpp_base_url": base_url, "comfyui_base_url": comfyui_base_url,
-                 "comfyui_local_model": comfyui_local_model, "llama_cpp_model": model,
+                 "comfyui_local_model": comfyui_local_model, "comfyui_image_provider": comfyui_image_provider,
+                 "llama_cpp_model": model,
                  "gigachat_model": gigachat_model, "gigachat_cloud_ack": gigachat_cloud_ack,
                  "voice_provider": voice_provider, "piper_executable": piper_executable,
                  "piper_model_h1": piper_model_h1, "piper_model_h2": piper_model_h2,
