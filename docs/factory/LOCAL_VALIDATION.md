@@ -110,21 +110,24 @@
 
 Это подтверждает HTTP-export и 7-node payload, но не browser download и не локальную генерацию изображения.
 
-## 2026-11-06 — A2 local image-job implementation (Arena mock only; NOT LOCALLY-VERIFIED)
+## 2026-11-03 — A2 ComfyUI local txt2img smoke-test (user report)
 
-**Статус:** реализация закоммичена локально на ветке Arena как `14c56b6`, но не запушена и не появилась в PR. Arena не подключалась к ComfyUI пользователя и не вызывала `/prompt`, Agnes или любой cloud API. Сетевые тесты используют только локальный fake HTTP server; пользователю не нужно передавать API key.
+**Источник:** пользовательский отчёт после публикации A2-кода на ветке `arena/c0c3d897-ai-first-steps`. Arena не запускала тест на компьютере пользователя и не открывала содержимое `.factory`; факты ниже записаны по предоставленному summary. Конкретный commit, установленный на машине для теста, не указан; актуальная доступная ветка включала A2-коммиты `14c56b6` и `054ccd0`.
 
 | Проверка | Результат |
 |---|---|
-| Explicit confirmation | UI сначала показывает план и browser confirm; image-run API отклоняет отсутствие явного согласия, разрешён только local / 0 EUR |
-| Workflow | На `/object_info` строится стандартный 7-node graph; POST уходит только на валидированный loopback ComfyUI, Agnes nodes отсутствуют |
-| Job/result | Mock проверяет POST `/prompt`, получение prompt_id, polling `/history`, скачивание `/view`, PNG и метаданные sampler/scheduler |
-| Recovery/cancellation | Поддержано восстановление по сохранённому prompt_id; неизвестный исход POST fail-closed без повтора; queued job удаляется без глобального `/interrupt` |
-| Asset/history | Валидированный PNG добавляется в immutable image history как `generated` / `comfyui_local_txt2img`, lifecycle `created`; автоматического выбора нет |
-| Automated checks | 80 тестов, 1 optional skip (`imageio_ffmpeg` отсутствует); `node --check factory/web/app.js`, `node tests/test_action_ui.js`, `python -m py_compile factory/*.py`, `git diff --check` проходят |
-| Local runtime/browser | Ещё не проверены в этой версии; handoff Windows test steps находятся в `ROADMAP.md` |
+| ComfyUI job | `4773dc1990ff49459e5d3590ccfa0017` — `completed`, 100%, без ошибок |
+| Профиль / модель | `comfyui-core-txt2img-v1` / `cyberrealistic_v80.safetensors` |
+| Параметры | 512×512, 20 steps, CFG 7.0, seed 4267882469 |
+| Prompt | «бирюзовый робот-кубик и школьница на ярком фоне» |
+| PNG-кандидат | `asset-1c7925318c13b4888213fe8e`, PNG 386 КБ; в истории оставлен невыбранным |
+| Visual variants сцены `s1` | 7 по отчёту: 2 upload и 5 ComfyUI; четыре ComfyUI-варианта плюс итоговый asset перечислены как `created`, загруженный `upload-65648ce2c9d3b3ec994a` — `selected` |
+| Другие сообщённые артефакты | В проекте указаны 8 PNG в `assets/sha256/`, 3 scene frames, 10 revisions и 20+ job artifacts; Arena эти файлы не проверяла |
+| Автоматический smoke-test | `_run_test.py` завершился с exit code 0; сообщены 5 шагов: load project → PATCH visual prompt → POST image-plan → POST image-run → check visual variants |
+| Тестовый harness | По отчёту `_run_test.py` запускал сервер в фоне и `_test_a2.py`; эти helper-скрипты отсутствуют в репозитории и не являются частью `run.bat` |
+| Ручной select/render ComfyUI-кадра | Не подтверждён: выбранным указан загруженный вариант, ComfyUI-варианты остались кандидатами `created` |
 
-**Ожидаемый локальный отчёт:** версия Windows/Python/ComfyUI, выбранная локальная модель, шаги UI, длительность, появился ли unselected candidate и прошёл ли ручной select/render; явно отметить, что Agnes/cloud не запускался. Не включать ключи и личные данные, не удалять `.factory`/untracked-файлы и не делать push.
+Это подтверждает локальную генерацию через ComfyUI и сохранение результата как нового кандидата, но не ручной выбор именно сгенерированного ComfyUI изображения и его включение в рендер. Секреты и содержимое пользовательского проекта не добавлялись в Git.
 
 ## Шаблон следующей проверки
 
