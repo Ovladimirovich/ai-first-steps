@@ -24,33 +24,29 @@ def atomic_write_json(path: Path, value: Any) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp_name, path)
-    except PermissionError as exc:
-        if sys.platform == "win32":
-            # os.replace / rename fails with PermissionError when the target
-            # file is locked (antivirus, indexer, or another reader).
-            # Fall back to direct write — good enough for single-process factory.
-            try:
+        try:
+            os.replace(temp_name, path)
+        except PermissionError:
+            if sys.platform == "win32":
+                # os.replace / rename fails with PermissionError when the target
+                # file is locked (antivirus, indexer, or another reader).
+                # Fall back to direct write — good enough for single-process factory.
                 path.write_text(payload, encoding="utf-8", newline="\n")
-            except Exception:
-                # ensure temp is removed even if direct write also fails
-                try:
-                    os.unlink(temp_name)
-                except OSError:
-                    pass
+            else:
                 raise
-        else:
-            try:
-                os.unlink(temp_name)
-            except OSError:
-                pass
-            raise
     except Exception:
         try:
             os.unlink(temp_name)
         except OSError:
             pass
         raise
+    finally:
+        # If os.replace succeeded, temp_name no longer exists — unlink is a no-op.
+        # If direct-write fallback was used, temp_name still exists and must be removed.
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
 
 
 def read_json(path: Path, default: Any = None) -> Any:
