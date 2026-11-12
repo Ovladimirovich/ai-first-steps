@@ -909,6 +909,21 @@ def main():
             from moviepy import AudioFileClip as mpe_AudioFileClip
             HAS_MOVIEPY = True
     cache = {}
+    # --- MoviePy 1.x / 2.x compatibility shims ---
+    def _subclip(clip, start, end):
+        if hasattr(clip, "subclipped"):
+            return clip.subclipped(start, end)
+        return clip.subclip(start, end)
+
+    def _set_audio(clip, audio):
+        if hasattr(clip, "with_audio"):
+            return clip.with_audio(audio)
+        return clip.set_audio(audio)
+
+    def _set_duration(clip, dur):
+        if hasattr(clip, "with_duration"):
+            return clip.with_duration(dur)
+        return clip.set_duration(dur)
     for idx, (typ, text, who, scene, dur) in enumerate(segments):
         # ключ кэша
         key = (typ, who, scene, text[:80]) if typ=="line" else (typ, scene)
@@ -932,7 +947,7 @@ def main():
     # режем/тянем до total точно (из-за округлений)
     if abs(final.duration - total) > 0.1:
         print(f"подгоняю длительность {final.duration:.2f}s -> {total:.2f}s")
-        final = final.subclip(0, total)
+        final = _subclip(final, 0, total)
 
     if not args.no_audio and voice.exists():
         print(f"аудио {voice} ({voice.stat().st_size/1024/1024:.1f}МБ)")
@@ -941,11 +956,11 @@ def main():
         if audio.duration < final.duration:
             print(f"аудио короче {audio.duration:.1f}s < {final.duration:.1f}s — добавлю тишину")
             # дополняем тишиной — просто растягиваем видео под аудио? делаем наоборот — режем видео
-            final = final.subclip(0, audio.duration)
+            final = _subclip(final, 0, audio.duration)
         else:
-            audio = audio.subclip(0, final.duration)
-        final = final.set_audio(audio)
-        final = final.set_duration(audio.duration)
+            audio = _subclip(audio, 0, final.duration)
+        final = _set_audio(final, audio)
+        final = _set_duration(final, audio.duration)
     else:
         print("без аудио")
 

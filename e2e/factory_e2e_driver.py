@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-r"""E2E driver: idea -> scene -> AgnesImage (one request per scene) -> piper TTS -> MP4
+r"""E2E driver: idea -> scene -> local render smoke (piper TTS -> MP4)
 Against the local Factory (HEAD 5464099, branch arena/c0c3d897-ai-first-steps) on http://localhost:7860.
 Run: C:\Projects_arena\ai-first-steps\.venv\Scripts\python.exe c:\Projects_arena\ai-first-steps\e2e\factory_e2e_driver.py <project_id>
 
 Quality pass (v2):
 - clean, meaningful script lines (no test markers);
-- AgnesImage generated backgrounds for ALL scenes (no placeholder uploads);
-- one AgnesImage request per scene (image-plan -> image-run -> variant select).
+- background images uploaded from existing active-scene-backgrounds/ (no Agnes/ComfyUI generation);
+- local voice (piper), local frames, local final MP4 render.
 """
 import json
 import sys
@@ -122,47 +122,13 @@ def main() -> None:
         lines = scene.get("lines") or scene.get("script") or []
         log(f"  scene {scene['id']} [{scene.get('order')}] {scene.get('title')} lines={len(lines)}")
 
-    # 1b) if the script is empty, produce it via the script-draft action (demo provider, offline)
+    # 1b) if the script is empty, fail fast — cloud-free smoke must not spend
+    # cloud quota on script generation. Provide a project with scenes already.
     if not scenes:
-        # Reuse an existing candidate-ready draft action when present (left by a previous run)
-        status, actions_view = http("GET", f"/api/projects/{project_id}/actions")
-        ready = next((a for a in actions_view.get("actions", [])
-                      if a.get("kind") == "script-draft" and a.get("status") == "candidate_ready"), None)
-        if ready is not None:
-            action_id = ready["action_id"]
-            input_fingerprint = (ready.get("candidate") or {}).get("input_fingerprint") or ready.get("input_fingerprint")
-            log(f"reusing ready script-draft action {action_id}")
-        else:
-            log("script empty -> running script-draft action (demo provider)")
-            status, act = http("POST", f"/api/projects/{project_id}/actions", {"kind": "script-draft"})
-            assert status == 201, f"script-draft propose failed: {status} {act}"
-            action_id = act["action_id"]
-            input_fingerprint = act["input_fingerprint"]
-            log(f"script-draft proposed: provider={act.get('provider')} scope={act.get('privacy_scope')}")
-            status, confirm_job = http("POST", f"/api/projects/{project_id}/actions/{action_id}/confirm", {
-                "input_fingerprint": input_fingerprint, "consent": True, "cloud_consent": True,
-                "cost_ceiling": {"amount": 500, "currency": "RUB"}, "privacy_scope": "cloud",
-            })
-            assert status == 202, f"script-draft confirm failed: {status} {confirm_job}"
-            confirm_job = poll_job(project_id, confirm_job["id"], timeout_s=300)
-            assert confirm_job.get("state") == "completed", f"draft job failed: {confirm_job.get('state')} error={confirm_job.get('error')}"
-        status, act2 = http("GET", f"/api/projects/{project_id}/actions/{action_id}")
-        assert status == 200, f"action read failed: {status} {act2}"
-        assert act2.get("status") in ("candidate_ready", "apply_pending"), f"draft not ready: {act2.get('status')}"
-        candidate = act2.get("candidate_spec")
-        log(f"draft candidate: scenes={len((candidate or {}).get('script', {}).get('scenes', []))}")
-        status, cur = http("GET", f"/api/projects/{project_id}")
-        status, applied = http("POST", f"/api/projects/{project_id}/actions/{action_id}/apply",
-                               {"expected_revision": cur["revision"], "input_fingerprint": input_fingerprint})
-        assert status == 200, f"apply failed: {status} {applied}"
-        log(f"draft applied -> project revision {applied['project']['revision']}")
-        status, proj = http("GET", f"/api/projects/{project_id}")
-        spec = proj["spec"]
-        scenes = spec["script"]["scenes"]
-        assert scenes, "script-draft produced no scenes"
-        for scene in scenes:
-            lines = scene.get("lines") or scene.get("script") or []
-            log(f"  scene {scene['id']} [{scene.get('order')}] {scene.get('title')} lines={len(lines)}")
+        raise SystemExit(
+            "E2E cloud-free smoke requires a project with scenes already present; "
+            "refusing to run script-draft (would spend cloud quota)."
+        )
 
     # 2) clean script: replace every line with meaningful narration (no test markers)
     status, proj = http("GET", f"/api/projects/{project_id}")
