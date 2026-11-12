@@ -198,3 +198,97 @@ def build_local_txt2img_workflow(object_info: dict, *, model: str, prompt: str,
     for name, value in (("steps", steps), ("cfg", cfg), ("seed", seed), ("denoise", 1.0)):
         _bounded_number(sampler_node, name, value)
     return {"profile_id": PROFILE_ID, "prompt": graph}
+
+
+AGNES_PROFILE_ID = "comfyui-agnes-t2i-v1"
+AGNES_TEXT_PRESET = "Prompt Enhance"
+
+# Versioned node IDs: "13" (AgnesImage) and "3" (PreviewImage) come from the clean
+# API-format export of a successful graph (docs/factory/agnes_graph.json);
+# "14" is the versioned AgnesText pre-processing node.
+AGNES_NODE_IMAGE = "13"
+AGNES_NODE_TEXT = "14"
+AGNES_NODE_PREVIEW = "3"
+
+AGNES_MAX_SEED = 0xFFFFFFFFFFFFFFFF
+
+
+def inspect_agnes_profile(object_info: dict) -> dict:
+    """Report Agnes cloud profile availability from the live schema without running anything.
+
+    Missing Agnes nodes disable the profile (available=False) instead of raising; a malformed
+    schema for a present node is rejected fail-closed.
+    """
+    if not isinstance(object_info, dict):
+        raise WorkflowProfileError("/object_info должен содержать JSON-объект")
+    required_nodes = ("AgnesImage", "AgnesText", "PreviewImage")
+    missing = [name for name in required_nodes if not isinstance(object_info.get(name), dict)]
+    result = {"profile_id": AGNES_PROFILE_ID, "available": not missing, "missing_nodes": missing,
+              "quality": [], "aspect_ratios": [], "text_presets": [], "text_preset": AGNES_TEXT_PRESET}
+    if missing:
+        return result
+    image_node = object_info["AgnesImage"]
+    text_node = object_info["AgnesText"]
+    preview_node = object_info["PreviewImage"]
+    required_inputs = {
+        "AgnesImage": ("prompt", "quality", "aspect_ratio", "seed"),
+        "AgnesText": ("preset", "prompt", "seed"),
+        "PreviewImage": ("images",),
+    }
+    nodes = {"AgnesImage": image_node, "AgnesText": text_node, "PreviewImage": preview_node}
+    for class_type, names in required_inputs.items():
+        for name in names:
+            _input_def(nodes[class_type], name)
+    _output_index(text_node, "OUTPUT")
+    _output_index(image_node, "IMAGES")
+    result["quality"] = _choices(image_node, "quality") or []
+    result["aspect_ratios"] = _choices(image_node, "aspect_ratio") or []
+    result["text_presets"] = _choices(text_node, "preset") or []
+    if not result["quality"] or not result["aspect_ratios"]:
+        raise WorkflowProfileError("ComfyUI не сообщил варианты quality/aspect_ratio для AgnesImage")
+    if not result["text_presets"]:
+        raise WorkflowProfileError("ComfyUI не сообщил варианты preset для AgnesText")
+    return result
+
+
+def build_agnes_txt2img_workflow(object_info: dict, *, prompt: str, quality: str, aspect_ratio: str,
+                                 seed: int, preprocess_prompt: bool = True,
+                                 text_preset: str = AGNES_TEXT_PRESET) -> dict:
+    """Build the versioned Agnes cloud graph after validating it against live /object_info.
+
+    AgnesText (when enabled) pre-processes the scene prompt; AgnesImage outputs the image,
+    and PreviewImage exposes it for download. No node link is guessed by name.
+    """
+    inspected = inspect_agnes_profile(object_info)
+    if not inspected["available"]:
+        raise WorkflowProfileError("Agnes-профиль недоступен: отсутствуют узлы "
+                                   + ", ".join(inspected["missing_nodes"]))
+    image_node = _node_info(object_info, "AgnesImage")
+    text_node = _node_info(object_info, "AgnesText")
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
+        raise WorkflowProfileError("Для Agnes-генерации укажите prompt длиной до 4000 символов")
+    quality = str(quality)
+    aspect_ratio = str(aspect_ratio)
+    if quality not in inspected["quality"]:
+        raise WorkflowProfileError("Качество отсутствует в вариантах AgnesImage из /object_info")
+    if aspect_ratio not in inspected["aspect_ratios"]:
+        raise WorkflowProfileError("Пропорция отсутствует в вариантах AgnesImage из /object_info")
+    if type(seed) is not int or seed < 0 or seed > AGNES_MAX_SEED:
+        raise WorkflowProfileError("Seed должен быть целым числом от 0 до 2^64−1")
+    image_output = _output_index(image_node, "IMAGES")
+    preview_node = _node_info(object_info, "PreviewImage")
+    _input_def(preview_node, "images")
+    graph: dict[str, dict] = {
+        AGNES_NODE_IMAGE: {"class_type": "AgnesImage", "inputs": {
+            "prompt": prompt.strip(), "quality": quality, "aspect_ratio": aspect_ratio, "seed": seed}},
+        AGNES_NODE_PREVIEW: {"class_type": "PreviewImage", "inputs": {
+            "images": [AGNES_NODE_IMAGE, image_output], "prompt": None, "extra_pnginfo": None}},
+    }
+    if preprocess_prompt:
+        if not isinstance(text_preset, str) or text_preset not in inspected["text_presets"]:
+            raise WorkflowProfileError("Preset AgnesText отсутствует в вариантах /object_info")
+        text_output = _output_index(text_node, "OUTPUT")
+        graph[AGNES_NODE_TEXT] = {"class_type": "AgnesText", "inputs": {
+            "preset": text_preset, "prompt": prompt.strip(), "seed": seed}}
+        graph[AGNES_NODE_IMAGE]["inputs"]["prompt"] = [AGNES_NODE_TEXT, text_output]
+    return {"profile_id": AGNES_PROFILE_ID, "prompt": graph, "result_node": AGNES_NODE_PREVIEW}

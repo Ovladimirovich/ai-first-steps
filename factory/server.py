@@ -26,7 +26,8 @@ from .providers import ProviderError, test_connection, check_gigachat_connection
 from .settings import SETTINGS_PATH, gigachat_credentials, load_settings, save_settings
 from .voice import check_piper_settings
 from .comfyui import (ComfyUIError, check_comfyui_connection,
-                     discover_local_txt2img_profile, export_local_txt2img_workflow)
+                     discover_local_txt2img_profile, export_local_txt2img_workflow,
+                     inspect_agnes_connection)
 from .visuals import (create_visual_variant, deselect_visual_variant, list_visual_variants,
                       reject_visual_variant, review_visual_variant, select_visual_variant,
                       update_visual_prompt)
@@ -115,6 +116,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/settings/comfyui/local-profile":
             try:
                 return self._json(200, discover_local_txt2img_profile(load_settings()))
+            except ComfyUIError as exc:
+                return self._error(exc, 400)
+        if path == "/api/settings/comfyui/agnes-profile":
+            try:
+                return self._json(200, inspect_agnes_connection(load_settings()))
             except ComfyUIError as exc:
                 return self._error(exc, 400)
         if path == "/api/projects":

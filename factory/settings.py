@@ -17,9 +17,17 @@ DEFAULT_SETTINGS = {
     "piper_executable": "piper",
     "piper_model_h1": "",
     "piper_model_h2": "",
+    "edge_voice_h1": "ru-RU-DmitryNeural",
+    "edge_voice_h2": "ru-RU-SvetlanaNeural",
+    "edge_rate_h1": "+0%",
+    "edge_rate_h2": "-10%",
     "gigachat_models": [],
     "comfyui_base_url": "http://127.0.0.1:8188",
     "comfyui_local_model": "",
+    "comfyui_image_profile": "local",
+    "comfyui_agnes_quality": "1K",
+    "comfyui_agnes_aspect_ratio": "4:3",
+    "comfyui_agnes_preprocess_prompt": True,
 }
 SETTINGS_PATH = ROOT / ".factory" / "settings.json"
 ENV_PATH = ROOT / ".env"
@@ -97,22 +105,38 @@ def save_settings(value: dict) -> dict:
     gigachat_model = str(value.get("gigachat_model", current["gigachat_model"])).strip()[:160]
     gigachat_cloud_ack = bool(value.get("gigachat_cloud_ack", current["gigachat_cloud_ack"]))
     voice_provider = str(value.get("voice_provider", current["voice_provider"]))
-    if voice_provider not in ("demo", "piper"):
-        raise ValueError("Выберите демо-тишину или локальный Piper")
+    if voice_provider not in ("demo", "piper", "edge"):
+        raise ValueError("Выберите демо-тишину, локальный Piper или Edge TTS")
     piper_executable = str(value.get("piper_executable", current["piper_executable"])).strip()[:2048] or "piper"
     piper_model_h1 = str(value.get("piper_model_h1", current["piper_model_h1"])).strip()[:2048]
     piper_model_h2 = str(value.get("piper_model_h2", current["piper_model_h2"])).strip()[:2048]
+    edge_voice_h1 = str(value.get("edge_voice_h1", current["edge_voice_h1"])).strip()[:64] or "ru-RU-DmitryNeural"
+    edge_voice_h2 = str(value.get("edge_voice_h2", current["edge_voice_h2"])).strip()[:64] or "ru-RU-SvetlanaNeural"
+    edge_rate_h1 = _edge_rate(value.get("edge_rate_h1", current["edge_rate_h1"]), "+0%")
+    edge_rate_h2 = _edge_rate(value.get("edge_rate_h2", current["edge_rate_h2"]), "-10%")
     # Validate and constrain the text endpoint to loopback to avoid remote script leakage.
     from .providers import _base_url
     base_url = _base_url(base_url)
     from .comfyui import normalize_comfyui_base_url
     comfyui_base_url = normalize_comfyui_base_url(value.get("comfyui_base_url", current.get("comfyui_base_url")))
     comfyui_local_model = str(value.get("comfyui_local_model", current.get("comfyui_local_model", ""))).strip()[:512]
+    comfyui_image_profile = str(value.get("comfyui_image_profile", current.get("comfyui_image_profile", "local")))
+    if comfyui_image_profile not in ("local", "agnes"):
+        raise ValueError("Выберите локальный или Agnes-профиль изображений")
+    comfyui_agnes_quality = str(value.get("comfyui_agnes_quality", current.get("comfyui_agnes_quality", "1K"))).strip()[:32] or "1K"
+    comfyui_agnes_aspect_ratio = str(value.get("comfyui_agnes_aspect_ratio", current.get("comfyui_agnes_aspect_ratio", "4:3"))).strip()[:32] or "4:3"
+    comfyui_agnes_preprocess_prompt = bool(value.get("comfyui_agnes_preprocess_prompt",
+                                                      current.get("comfyui_agnes_preprocess_prompt", True)))
     persisted = {"text_provider": provider, "llama_cpp_base_url": base_url, "comfyui_base_url": comfyui_base_url,
                  "comfyui_local_model": comfyui_local_model, "llama_cpp_model": model,
                  "gigachat_model": gigachat_model, "gigachat_cloud_ack": gigachat_cloud_ack,
+                 "comfyui_image_profile": comfyui_image_profile, "comfyui_agnes_quality": comfyui_agnes_quality,
+                 "comfyui_agnes_aspect_ratio": comfyui_agnes_aspect_ratio,
+                 "comfyui_agnes_preprocess_prompt": comfyui_agnes_preprocess_prompt,
                  "voice_provider": voice_provider, "piper_executable": piper_executable,
                  "piper_model_h1": piper_model_h1, "piper_model_h2": piper_model_h2,
+                  "edge_voice_h1": edge_voice_h1, "edge_voice_h2": edge_voice_h2,
+                  "edge_rate_h1": edge_rate_h1, "edge_rate_h2": edge_rate_h2,
                  "gigachat_models": [str(m)[:160] for m in value.get("gigachat_models", current.get("gigachat_models", [])) if isinstance(m, str) and m.strip()][:50]}
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(persisted, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -135,6 +135,82 @@ def _queue_contains(queue_data: dict, prompt_id: str, key: str) -> bool:
                for entry in entries)
 
 
+def _submit_graph_and_wait(base_url: str, graph: dict, *, result_node: str, view_type: str,
+                           allowed_subfolders: tuple, progress_text: str, rejected_text: str,
+                           failed_text: str, timeout_text: str, prompt_id_text: str,
+                           resume_prompt_id: str | None, cancel_requested, progress,
+                           on_submitting, on_submitted, timeout: float, poll_interval: float) -> tuple[bytes, dict]:
+    """Submit one validated workflow to loopback ComfyUI, wait for the result node, download the PNG.
+
+    Cancellation removes a still-pending prompt; a running prompt is allowed to finish rather than
+    using ComfyUI's global /interrupt endpoint, which could stop another user's workflow.
+    """
+    from .jobs import JobCancelled
+
+    prompt_id = str(resume_prompt_id or "")
+    if cancel_requested() and not prompt_id:
+        raise JobCancelled()
+    if not prompt_id:
+        on_submitting()
+        if cancel_requested():
+            raise JobCancelled()
+        client_id = uuid.uuid4().hex
+        response = _post_json(base_url, "/prompt", {"prompt": graph, "client_id": client_id})
+        prompt_id = str(response.get("prompt_id", ""))
+        if response.get("node_errors"):
+            raise ComfyUIError(rejected_text)
+        if not prompt_id or len(prompt_id) > 128 or not all(c.isalnum() or c in "-_" for c in prompt_id):
+            raise ComfyUIError(prompt_id_text)
+        on_submitted(prompt_id)
+    elif len(prompt_id) > 128 or not all(c.isalnum() or c in "-_" for c in prompt_id):
+        raise ComfyUIError("Сохранённый ComfyUI prompt_id некорректен; workflow не будет отправлен повторно")
+    started = time.monotonic()
+    last_progress = 0.0
+    while time.monotonic() - started < timeout:
+        elapsed = time.monotonic() - started
+        if cancel_requested():
+            queue_data = _get_json(base_url, "/queue", timeout=10)
+            if _queue_contains(queue_data, prompt_id, "queue_pending"):
+                _post_json(base_url, "/queue", {"delete": [prompt_id]}, timeout=10)
+                raise JobCancelled()
+            # Running prompts cannot be safely interrupted globally. Wait for the
+            # workflow to finish, then discard its result so no candidate is registered.
+        history = _get_json(base_url, "/history/" + urllib.parse.quote(prompt_id, safe=""), timeout=15)
+        entry = history.get(prompt_id) if isinstance(history, dict) else None
+        if isinstance(entry, dict):
+            status = entry.get("status", {}) if isinstance(entry.get("status"), dict) else {}
+            if status.get("status_str") == "error" or entry.get("outputs") is None:
+                raise ComfyUIError(failed_text)
+            outputs = entry.get("outputs", {})
+            result_output = outputs.get(result_node, {}) if isinstance(outputs, dict) else {}
+            images = result_output.get("images", []) if isinstance(result_output, dict) else []
+            if images:
+                image = images[0]
+                if not isinstance(image, dict) or not image.get("filename"):
+                    raise ComfyUIError("ComfyUI завершил workflow без корректного файла изображения")
+                filename = str(image["filename"])
+                subfolder = str(image.get("subfolder", ""))
+                image_type = str(image.get("type", view_type))
+                if (len(filename) > 255 or filename in (".", "..") or "/" in filename or "\\" in filename
+                        or any(ord(char) < 32 for char in filename) or subfolder not in allowed_subfolders
+                        or image_type != view_type):
+                    raise ComfyUIError("ComfyUI вернул небезопасный путь к файлу изображения")
+                query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": image_type})
+                data = _get_bytes(base_url, "/view?" + query, limit=3_500_000)
+                if cancel_requested():
+                    raise JobCancelled()
+                return data, {"prompt_id": prompt_id, "elapsed_s": round(elapsed, 2)}
+        if elapsed - last_progress >= 4:
+            progress(progress_text)
+            last_progress = elapsed
+        time.sleep(max(0.1, min(float(poll_interval), 5.0)))
+    # Avoid leaving work queued after timeout; don't interrupt a running ComfyUI task.
+    queue_data = _get_json(base_url, "/queue", timeout=10)
+    if _queue_contains(queue_data, prompt_id, "queue_pending"):
+        _post_json(base_url, "/queue", {"delete": [prompt_id]}, timeout=10)
+    raise ComfyUIError(timeout_text)
+
+
 def generate_local_txt2img(settings: dict, *, model: str, prompt: str, negative_prompt: str,
                            seed: int, width: int, height: int, steps: int, cfg: float,
                            cancel_requested=lambda: False, progress=lambda _message: None,
@@ -156,72 +232,62 @@ def generate_local_txt2img(settings: dict, *, model: str, prompt: str, negative_
         object_info, model=model, prompt=prompt, negative_prompt=negative_prompt, seed=seed,
         width=width, height=height, steps=steps, cfg=cfg)
     sampler_inputs = built["prompt"]["5"]["inputs"]
-    prompt_id = str(resume_prompt_id or "")
-    if cancel_requested() and not prompt_id:
-        raise JobCancelled()
-    if not prompt_id:
-        on_submitting()
-        if cancel_requested():
-            raise JobCancelled()
-        client_id = uuid.uuid4().hex
-        response = _post_json(base_url, "/prompt", {"prompt": built["prompt"], "client_id": client_id})
-        prompt_id = str(response.get("prompt_id", ""))
-        if response.get("node_errors"):
-            raise ComfyUIError("ComfyUI отклонил граф при локальной проверке узлов; сверьте профиль с /object_info")
-        if not prompt_id or len(prompt_id) > 128 or not all(c.isalnum() or c in "-_" for c in prompt_id):
-            raise ComfyUIError("ComfyUI не вернул корректный prompt_id для локального workflow")
-        on_submitted(prompt_id)
-    elif len(prompt_id) > 128 or not all(c.isalnum() or c in "-_" for c in prompt_id):
-        raise ComfyUIError("Сохранённый ComfyUI prompt_id некорректен; workflow не будет отправлен повторно")
-    started = time.monotonic()
-    last_progress = 0.0
-    while time.monotonic() - started < timeout:
-        elapsed = time.monotonic() - started
-        if cancel_requested():
-            queue_data = _get_json(base_url, "/queue", timeout=10)
-            if _queue_contains(queue_data, prompt_id, "queue_pending"):
-                _post_json(base_url, "/queue", {"delete": [prompt_id]}, timeout=10)
-                raise JobCancelled()
-            # Running prompts cannot be safely interrupted globally. Wait for the local
-            # workflow to finish, then discard its result so no candidate is registered.
-        history = _get_json(base_url, "/history/" + urllib.parse.quote(prompt_id, safe=""), timeout=15)
-        entry = history.get(prompt_id) if isinstance(history, dict) else None
-        if isinstance(entry, dict):
-            status = entry.get("status", {}) if isinstance(entry.get("status"), dict) else {}
-            if status.get("status_str") == "error" or entry.get("outputs") is None:
-                raise ComfyUIError("Локальный workflow завершился ошибкой; проверьте журнал/очередь только на своём компьютере")
-            outputs = entry.get("outputs", {})
-            save_output = outputs.get("7", {}) if isinstance(outputs, dict) else {}
-            images = save_output.get("images", []) if isinstance(save_output, dict) else []
-            if images:
-                image = images[0]
-                if not isinstance(image, dict) or not image.get("filename"):
-                    raise ComfyUIError("ComfyUI завершил workflow без корректного файла изображения")
-                filename = str(image["filename"])
-                subfolder = str(image.get("subfolder", ""))
-                image_type = str(image.get("type", "output"))
-                if (len(filename) > 255 or filename in (".", "..") or "/" in filename or "\\" in filename
-                        or any(ord(char) < 32 for char in filename) or subfolder not in ("", "ai_video_factory")
-                        or image_type != "output"):
-                    raise ComfyUIError("ComfyUI вернул небезопасный путь к файлу изображения")
-                query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": image_type})
-                data = _get_bytes(base_url, "/view?" + query, limit=3_500_000)
-                if cancel_requested():
-                    raise JobCancelled()
-                return data, {"prompt_id": prompt_id, "elapsed_s": round(elapsed, 2),
-                              "model": model, "seed": seed, "steps": steps, "cfg": cfg,
-                              "width": width, "height": height,
-                              "sampler": sampler_inputs["sampler_name"],
-                              "scheduler": sampler_inputs["scheduler"]}
-        if elapsed - last_progress >= 4:
-            progress("Жду локальный ComfyUI — workflow выполняется только на этом компьютере")
-            last_progress = elapsed
-        time.sleep(max(0.1, min(float(poll_interval), 5.0)))
-    # Avoid leaving work queued after timeout; don't interrupt a running ComfyUI task.
-    queue_data = _get_json(base_url, "/queue", timeout=10)
-    if _queue_contains(queue_data, prompt_id, "queue_pending"):
-        _post_json(base_url, "/queue", {"delete": [prompt_id]}, timeout=10)
-    raise ComfyUIError("Локальный workflow не завершился за отведённое время; проверьте очередь ComfyUI")
+    data, info = _submit_graph_and_wait(
+        base_url, built["prompt"], result_node="7", view_type="output",
+        allowed_subfolders=("", "ai_video_factory"),
+        progress_text="Жду локальный ComfyUI — workflow выполняется только на этом компьютере",
+        rejected_text="ComfyUI отклонил граф при локальной проверке узлов; сверьте профиль с /object_info",
+        failed_text="Локальный workflow завершился ошибкой; проверьте журнал/очередь только на своём компьютере",
+        timeout_text="Локальный workflow не завершился за отведённое время; проверьте очередь ComfyUI",
+        prompt_id_text="ComfyUI не вернул корректный prompt_id для локального workflow",
+        resume_prompt_id=resume_prompt_id, cancel_requested=cancel_requested, progress=progress,
+        on_submitting=on_submitting, on_submitted=on_submitted,
+        timeout=timeout, poll_interval=poll_interval)
+    return data, {**info, "model": model, "seed": seed, "steps": steps, "cfg": cfg,
+                  "width": width, "height": height,
+                  "sampler": sampler_inputs["sampler_name"], "scheduler": sampler_inputs["scheduler"]}
+
+
+def generate_agnes_txt2img(settings: dict, *, prompt: str, quality: str, aspect_ratio: str,
+                           seed: int, preprocess_prompt: bool = True,
+                           text_preset: str = "Prompt Enhance",
+                           cancel_requested=lambda: False, progress=lambda _message: None,
+                           on_submitting=lambda: None, on_submitted=lambda _prompt_id: None,
+                           resume_prompt_id: str | None = None, timeout: float = 3600,
+                           poll_interval: float = 1.5) -> tuple[bytes, dict]:
+    """Submit one explicitly requested Agnes cloud workflow to loopback ComfyUI and wait for output.
+
+    The cloud Agnes call is made by the local ComfyUI instance that holds the API key; the factory
+    only POSTs to the loopback /prompt. It never switches providers: on error there is no local
+    or paid fallback.
+    """
+    from .comfyui_profiles import AGNES_PROFILE_ID, build_agnes_txt2img_workflow
+
+    base_url = normalize_comfyui_base_url(settings.get("comfyui_base_url"))
+    object_info = _get_json(base_url, "/object_info", timeout=20)
+    built = build_agnes_txt2img_workflow(
+        object_info, prompt=prompt, quality=quality, aspect_ratio=aspect_ratio, seed=seed,
+        preprocess_prompt=preprocess_prompt, text_preset=text_preset)
+    data, info = _submit_graph_and_wait(
+        base_url, built["prompt"], result_node=built["result_node"], view_type="temp",
+        allowed_subfolders=("",),
+        progress_text="Жду Agnes cloud — генерация идёт через локальный ComfyUI; API-ключ остаётся на этом компьютере",
+        rejected_text="ComfyUI отклонил Agnes-граф при локальной проверке узлов; сверьте профиль с /object_info",
+        failed_text="Agnes cloud workflow завершился ошибкой; проверьте журнал локального ComfyUI. Платного fallback нет",
+        timeout_text="Agnes cloud workflow не завершился за отведённое время; проверьте очередь локального ComfyUI. Платного fallback нет",
+        prompt_id_text="ComfyUI не вернул корректный prompt_id для Agnes-графа",
+        resume_prompt_id=resume_prompt_id, cancel_requested=cancel_requested, progress=progress,
+        on_submitting=on_submitting, on_submitted=on_submitted,
+        timeout=timeout, poll_interval=poll_interval)
+    return data, {**info, "profile_id": AGNES_PROFILE_ID, "quality": quality, "aspect_ratio": aspect_ratio,
+                  "preprocess_prompt": bool(preprocess_prompt),
+                  "text_preset": text_preset if preprocess_prompt else None, "seed": seed}
+
+
+def inspect_agnes_connection(settings: dict) -> dict:
+    """Read-only Agnes cloud profile availability report; it never runs a workflow."""
+    from .comfyui_profiles import inspect_agnes_profile
+    return inspect_agnes_profile(get_comfyui_object_info(settings))
 
 
 def check_comfyui_connection(settings: dict) -> dict:

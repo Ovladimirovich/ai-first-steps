@@ -126,6 +126,23 @@
 
 **Ожидаемый локальный отчёт:** версия Windows/Python/ComfyUI, выбранная локальная модель, шаги UI, длительность, появился ли unselected candidate и прошёл ли ручной select/render; явно отметить, что Agnes/cloud не запускался. Не включать ключи и личные данные, не удалять `.factory`/untracked-файлы и не делать push.
 
+## 2026-11-12 — Agnes cloud profile `comfyui-agnes-t2i-v1` (Arena mock only; NOT LOCALLY-VERIFIED)
+
+**Статус:** закоммитить ещё нет; рабочее дерево содержит профиль, облачный Agnes через loopback ComfyUI и UI-раздел настроек. Arena не запускала Agnes-генерацию и не подключалась к Agnes cloud; все проверки — mock-тесты и ручная API-проверка экспорта пользователем.
+
+**Исходные данные:** пользователь выполнил Agnes-генерацию в ComfyUI 0.34.5 (127.0.0.1:8188) и передал чистый API-format export успешного графа — `docs/factory/agnes_graph.json` (узел «13» AgnesImage: prompt/quality «1K»/aspect «4:3»/seed; узел «3» PreviewImage: `["13", 0]`). Секретов в файле нет; API-ключ Agnes остаётся в настройках локального ComfyUI.
+
+| Проверка | Результат |
+|---|---|
+| Profile build | `comfyui_profiles.build_agnes_txt2img_workflow`: граф «13» AgnesImage → «3» PreviewImage; при предобработке — «14» AgnesText (preset «Prompt Enhance», выход `["14", 0]` → prompt AgnesImage). Quality/aspect/preset валидируются по живому `/object_info`, чужие значения отклоняются |
+| Read-only endpoint | `GET /api/settings/comfyui/agnes-profile` возвращает `available`, `missing_nodes`, варианты quality/aspect и preset; только GET `/object_info`, workflow не запускается |
+| Execution | `generate_agnes_txt2img`: POST только на валидированный loopback `/prompt`, ожидание `/history/<id>`, скачивание `/view?type=temp` из узла «3»; отмена снимает queued prompt без глобального `/interrupt` |
+| Consent | Отдельный approval-scope `cloud_free`: `cloud_consent=true` и нулевой предел стоимости (бесплатная квота, нет платного fallback); `jobs._validate_approval` отклоняет `cloud_free` с ненулевым лимитом или без согласия |
+| Pipeline | `plan("image")` при `comfyui_image_profile=agnes`: provider `comfyui_agnes`, `billing_mode=free_quota`, privacy scope `cloud`; `run` принимает только `cloud_free`-подтверждение; `_execute_job` диспетчеризирует на `_make_agnes_image_variant`; drift настроек (quality/aspect/preprocess) инвалидирует план |
+| Asset/history | PNG регистрируется как `generated` / `comfyui_agnes_txt2img` с metadata `profile_id`/`parameters`; автоматического выбора нет |
+| Automated checks | 101 тест (включая 13 новых Agnes-тестов: граф, reject, success/cancel/node-errors, cloud_free-цепочка, drift) — OK; `node --check factory/web/app.js` — OK |
+| Local runtime/browser | Не проверены; handoff: выбрать Agnes-профиль в настройках ComfyUI, нажать «Проверить Agnes-профиль», сгенерировать вариант с отметкой согласия, убедиться в unselected candidate |
+
 ## Шаблон следующей проверки
 
 ```text

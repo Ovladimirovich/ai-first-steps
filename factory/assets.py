@@ -42,7 +42,8 @@ def _append_record(project_id: str, *, asset_type: str, target: dict, relative: 
         "input_fingerprint": input_fingerprint,
         "created_at": time.time(),
     }
-    allowed_metadata = {"prompt", "model", "parameters", "action_id", "created_by", "prompt_template_version"}
+    allowed_metadata = {"prompt", "model", "parameters", "action_id", "created_by",
+                       "prompt_template_version", "profile_id"}
     for key, value in (metadata or {}).items():
         if key not in allowed_metadata:
             raise ValueError(f"Недопустимое provenance-поле ассета: {key}")

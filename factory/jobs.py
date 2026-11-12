@@ -163,6 +163,11 @@ def _validate_approval(approval: dict | None, input_fingerprint: str) -> dict:
     if scope == "cloud":
         if amount <= 0 or approval.get("cloud_consent") is not True:
             raise ValueError("Облачная задача требует положительного лимита и отдельного согласия")
+    elif scope == "cloud_free":
+        if approval.get("cloud_consent") is not True:
+            raise ValueError("Облачная задача бесплатной квоты требует отдельного облачного согласия")
+        if amount != 0:
+            raise ValueError("Профиль бесплатной квоты (нет платного fallback) разрешает только нулевой предел стоимости")
     elif scope != "local":
         raise ValueError("Укажите локальный или облачный scope согласия")
     return approval
