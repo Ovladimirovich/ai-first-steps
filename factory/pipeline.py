@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -432,7 +433,10 @@ set_executor(_execute_job)
 
 def _run_cancellable(job: dict, command: list[str], *, cwd: str | None = None,
                      stdin_text: str | None = None) -> tuple[int, str]:
-    process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE if stdin_text is not None else None,
+    env = dict(os.environ)
+    env["TQDM_DISABLE"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+    process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE if stdin_text is not None else None,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                text=True, encoding="utf-8", errors="replace", bufsize=1)
     if stdin_text is not None and process.stdin is not None:

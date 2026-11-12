@@ -889,12 +889,25 @@ def main():
     clips = []
     # кэш картинок чтобы не перегенерировать одинаковые gap одной сцены
     try:
-        import moviepy.editor as mpe
+        # moviepy 2.x: import directly from moviepy
+        from moviepy import ImageClip as mpe_ImageClip
+        from moviepy import concatenate_videoclips as mpe_concat
+        from moviepy import AudioFileClip as mpe_AudioFileClip
         HAS_MOVIEPY = True
     except ImportError:
-        print("ставлю moviepy..."); os.system(f"{sys.executable} -m pip install -q moviepy")
-        import moviepy.editor as mpe
-        HAS_MOVIEPY = True
+        try:
+            # moviepy 1.x compatibility
+            import moviepy.editor as mpe
+            mpe_ImageClip = mpe.ImageClip
+            mpe_concat = mpe.concatenate_videoclips
+            mpe_AudioFileClip = mpe.AudioFileClip
+            HAS_MOVIEPY = True
+        except ImportError:
+            print("ставлю moviepy..."); os.system(f"{sys.executable} -m pip install -q moviepy")
+            from moviepy import ImageClip as mpe_ImageClip
+            from moviepy import concatenate_videoclips as mpe_concat
+            from moviepy import AudioFileClip as mpe_AudioFileClip
+            HAS_MOVIEPY = True
     cache = {}
     for idx, (typ, text, who, scene, dur) in enumerate(segments):
         # ключ кэша
@@ -911,11 +924,11 @@ def main():
                 print(f"  {idx+1}/{len(segments)} {typ} {scene} {dur:.2f}s -> {img_path.name}")
 
         # ImageClip из файла (ленивая загрузка, экономит RAM)
-        clip = mpe.ImageClip(str(img_path), duration=dur)
+        clip = mpe_ImageClip(str(img_path), duration=dur)
         clips.append(clip)
 
     print(f"склейка {len(clips)} клипов...")
-    final = mpe.concatenate_videoclips(clips, method="compose")
+    final = mpe_concat(clips, method="compose")
     # режем/тянем до total точно (из-за округлений)
     if abs(final.duration - total) > 0.1:
         print(f"подгоняю длительность {final.duration:.2f}s -> {total:.2f}s")
@@ -923,7 +936,7 @@ def main():
 
     if not args.no_audio and voice.exists():
         print(f"аудио {voice} ({voice.stat().st_size/1024/1024:.1f}МБ)")
-        audio = mpe.AudioFileClip(str(voice))
+        audio = mpe_AudioFileClip(str(voice))
         # подгоняем аудио под видео (обрезаем/петля не нужна, у нас total совпадает)
         if audio.duration < final.duration:
             print(f"аудио короче {audio.duration:.1f}s < {final.duration:.1f}s — добавлю тишину")

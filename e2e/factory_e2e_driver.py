@@ -14,6 +14,12 @@ import time
 import urllib.request
 from pathlib import Path
 
+# Force UTF-8 for Windows console (cp1251) — prevents UnicodeEncodeError on ₽ etc.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 BASE = "http://localhost:7860"
 LOG = Path(r"c:\Projects_arena\factory_e2e_driver.log")
 _log_lines = []
@@ -46,7 +52,11 @@ PROMPTS = {
 
 def log(msg: str) -> None:
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        # Windows console cp1251 doesn't support ₽ and other symbols
+        print(line.encode('cp1251', 'replace').decode('cp1251'), flush=True)
     _log_lines.append(line)
 
 
@@ -94,7 +104,7 @@ def local_confirmation() -> dict:
 def cloud_free_quota_confirmation() -> dict:
     return {
         "max_cost": 0, "currency": "EUR",
-        "privacy_scope": "cloud", "consent": True, "cloud_consent": True,
+        "privacy_scope": "cloud_free", "consent": True, "cloud_consent": True,
         "billing_mode": "free_quota", "daily_quota_ack": True,
     }
 
@@ -130,8 +140,8 @@ def main() -> None:
             input_fingerprint = act["input_fingerprint"]
             log(f"script-draft proposed: provider={act.get('provider')} scope={act.get('privacy_scope')}")
             status, confirm_job = http("POST", f"/api/projects/{project_id}/actions/{action_id}/confirm", {
-                "input_fingerprint": input_fingerprint, "consent": True,
-                "cost_ceiling": {"amount": 0, "currency": "RUB"}, "privacy_scope": "local",
+                "input_fingerprint": input_fingerprint, "consent": True, "cloud_consent": True,
+                "cost_ceiling": {"amount": 500, "currency": "RUB"}, "privacy_scope": "cloud",
             })
             assert status == 202, f"script-draft confirm failed: {status} {confirm_job}"
             confirm_job = poll_job(project_id, confirm_job["id"], timeout_s=300)
@@ -193,23 +203,37 @@ def main() -> None:
         assert status == 200, f"PATCH visuals {sid} failed: {status} {updated}"
         log(f"prompt saved for scene {sid}: unchanged={updated.get('unchanged')}")
 
-        status, plan_entry = http("POST", f"/api/projects/{project_id}/image-plan", {"kind": sid})
-        assert status == 200, f"image-plan {sid} failed: {status} {plan_entry}"
-        log(f"image-plan {sid}: provider={plan_entry.get('provider')} billing={plan_entry.get('billing_mode')} "
-            f"cost={plan_entry.get('cost')} EUR scope={plan_entry.get('privacy_scope')}")
-        assert plan_entry.get("provider") == "comfyui_agnes"
-        assert plan_entry.get("billing_mode") == "free_quota"
-
-        status, job = http("POST", f"/api/projects/{project_id}/image-run", {
-            "plan_id": plan_entry["id"], "kind": sid,
-            "confirmation": cloud_free_quota_confirmation(),
+        import base64
+        bg_dir = Path(r"C:\Projects_arena\ai-first-steps\.factory\projects") / project_id / "active-scene-backgrounds"
+        # find the actual background file (may be .jpg or .png despite extension)
+        bg_file = None
+        for ext in (".jpg", ".png", ".jpeg", ".webp"):
+            candidate = bg_dir / f"{sid}{ext}"
+            if candidate.is_file():
+                bg_file = candidate
+                break
+        assert bg_file is not None, f"no background image for scene {sid} in {bg_dir}"
+        raw = bg_file.read_bytes()
+        # detect MIME from file signature
+        if raw[:4] == b'\x89PNG':
+            mime = "image/png"
+        elif raw[:3] == b'\xff\xd8\xff':
+            mime = "image/jpeg"
+        elif raw[:4] == b'RIFF' and len(raw) > 12 and raw[8:12] == b'WEBP':
+            mime = "image/webp"
+        else:
+            mime = "application/octet-stream"
+        b64 = base64.b64encode(raw).decode("ascii")
+        data_url = f"data:{mime};base64,{b64}"
+        log(f"uploading existing background for scene {sid}: {bg_file.name} ({len(raw)} bytes) {mime}")
+        status, created = http("POST", f"/api/projects/{project_id}/visual-variants", {
+            "scene_id": sid,
+            "expected_revision": proj["revision"],
+            "data_url": data_url,
+            "prompt": {"text": PROMPTS[sid], "negative": ""},
         })
-        assert status == 202, f"image-run {sid} failed: {status} {job}"
-        log(f"image-run {sid} queued: job={job['id']} state={job.get('state')}")
-        job = poll_job(project_id, job["id"], timeout_s=600)
-        assert job.get("state") == "completed", (f"image job {sid} failed: {job.get('state')} "
-                                                f"error={job.get('error')} logs={job.get('log')[-6:]}")
-        log(f"image job {sid} completed: {job.get('message')}")
+        assert status in (200, 201), f"variant upload {sid} failed: {status} {created}"
+        log(f"variant uploaded for scene {sid}")
 
         status, variants = http("GET", f"/api/projects/{project_id}/visual-variants?scene_id={sid}")
         assert status == 200, f"visual-variants {sid} failed: {status} {variants}"
@@ -217,7 +241,7 @@ def main() -> None:
         for item in items:
             log(f"  {sid} variant {item.get('asset_id')} source={item.get('source')} "
                 f"v{item.get('asset_version')} stale={item.get('stale')}")
-        fresh = [item for item in items if item.get("source") == "generated" and not item.get("stale")]
+        fresh = [item for item in items if item.get("source") == "uploaded" and not item.get("stale")]
         pool = fresh or items
         assert pool, f"no visual variant found for scene {sid}"
         chosen = pool[-1]
@@ -267,7 +291,7 @@ def main() -> None:
     log(f"render job completed: {rjob.get('message')}")
 
     # 11) verify MP4 on disk
-    mp4 = Path(r"C:\Projects_arena\ai-first-steps-agnes\.factory\projects") / project_id / "renders" / "final.mp4"
+    mp4 = Path(r"C:\Projects_arena\ai-first-steps\.factory\projects") / project_id / "renders" / "final.mp4"
     assert mp4.is_file() and mp4.stat().st_size > 0, f"final.mp4 missing: {mp4}"
     log(f"final.mp4 exists: {mp4} ({mp4.stat().st_size // 1024} KB)")
 

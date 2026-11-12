@@ -41,9 +41,13 @@ def _input_def(node: dict, name: str) -> list:
 
 def _choices(node: dict, name: str) -> list[str] | None:
     definition = _input_def(node, name)
-    options = definition[0]
-    if isinstance(options, list):
-        return [str(item) for item in options]
+    if isinstance(definition[0], list):
+        return [str(item) for item in definition[0]]
+    # For COMBO-type inputs, options live in definition[1]["options"]
+    if len(definition) > 1 and isinstance(definition[1], dict):
+        opts = definition[1].get("options")
+        if isinstance(opts, list):
+            return [str(item) for item in opts]
     return None
 
 
