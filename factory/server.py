@@ -103,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(candidate)
         if path.startswith("/api/settings/voice/samples/"):
             sample = path.removeprefix("/api/settings/voice/samples/")
-            if sample not in ("h1.wav", "h2.wav"):
+            if sample not in ("h1.wav", "h2.wav", "h1.mp3", "h2.mp3"):
                 return self.send_error(404)
             sample_dir = (SETTINGS_PATH.parent / "voice-tests").resolve()
             candidate = (sample_dir / sample).resolve()
@@ -251,9 +251,12 @@ class Handler(BaseHTTPRequestHandler):
                                         "message": "Workflow JSON сформирован; в ComfyUI он не отправлялся."})
             if path == "/api/settings/voice/test":
                 settings = load_settings()
-                if settings.get("voice_provider") != "piper":
-                    return self._error("Сначала выберите Piper в настройках озвучки.")
-                return self._json(200, check_piper_settings(settings, SETTINGS_PATH.parent / "voice-tests"))
+                if settings.get("voice_provider") == "piper":
+                    return self._json(200, check_piper_settings(settings, SETTINGS_PATH.parent / "voice-tests"))
+                if settings.get("voice_provider") == "edge":
+                    from .tts_edge import check_edge_settings
+                    return self._json(200, check_edge_settings(settings, SETTINGS_PATH.parent / "voice-tests"))
+                return self._error("Сначала выберите Piper или Edge TTS в настройках озвучки.")
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "visual-variants":
                 scene_id = str(body.get("scene_id", ""))
                 data_url = str(body.get("data_url", ""))

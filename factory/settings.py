@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from .core import ROOT
@@ -48,6 +49,16 @@ def gigachat_credentials() -> dict:
             "ca_bundle": env.get("GIGACHAT_CA_BUNDLE", "")}
 
 
+def _edge_rate(raw, default: str) -> str:
+    text = str(raw).strip() or default
+    if not re.fullmatch(r"[+-]?\d{1,3}(?:\.\d)?%", text):
+        raise ValueError(f"Скорость Edge TTS задаётся процентами, например «+0%» или «-10%», а не {text!r}")
+    # edge-tts требует явный знак у скорости: «5%» приводится к «+5%».
+    if not text[0] in "+-":
+        text = "+" + text
+    return text
+
+
 def load_settings() -> dict:
     try:
         stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -67,6 +78,10 @@ def load_settings() -> dict:
     result["piper_executable"] = env.get("PIPER_EXECUTABLE", result["piper_executable"])
     result["piper_model_h1"] = env.get("PIPER_MODEL_H1", result["piper_model_h1"])
     result["piper_model_h2"] = env.get("PIPER_MODEL_H2", result["piper_model_h2"])
+    result["edge_voice_h1"] = env.get("EDGE_VOICE_H1", result["edge_voice_h1"])
+    result["edge_voice_h2"] = env.get("EDGE_VOICE_H2", result["edge_voice_h2"])
+    result["edge_rate_h1"] = env.get("EDGE_RATE_H1", result["edge_rate_h1"])
+    result["edge_rate_h2"] = env.get("EDGE_RATE_H2", result["edge_rate_h2"])
     result["comfyui_base_url"] = env.get("COMFYUI_BASE_URL", result["comfyui_base_url"])
     result["gigachat_credentials_configured"] = bool(env.get("GIGACHAT_CLIENT_ID") and env.get("GIGACHAT_CLIENT_SECRET"))
     return result
