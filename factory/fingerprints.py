@@ -12,7 +12,7 @@ from .timing import TIMING_ENGINE_VERSION, pause_after_s, timing_for
 
 FINGERPRINT_VERSION = 1
 VOICE_ENGINE_VERSION = "factory-demo-silence-v1"
-FRAME_ENGINE_VERSION = "factory-legacy-frame-v1"
+FRAME_ENGINE_VERSION = "factory-frame-image-first-v2"
 _CONTENT_HASH_CACHE: dict[str, tuple[int, int, str]] = {}
 _CONTENT_HASH_LOCK = threading.Lock()
 

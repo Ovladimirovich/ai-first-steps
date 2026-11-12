@@ -700,7 +700,9 @@ def _make_voice(project: dict, job: dict) -> None:
         voice_meta.update({"asset_id": mix_record["asset_id"], "asset_version": mix_record["asset_version"],
                            "path": mix_record["path"], "sha256": mix_record["sha256"]})
     atomic_write_json(root / "voice.meta.json", voice_meta)
-    message = "Piper-озвучка готова. Речь обработана локально и подогнана под тайминг проекта." if voice_provider == "piper" else "Демо-озвучка готова. Это тишина с длительностью по тексту, не настоящий голос."
+    message = ("Piper-аудиофайлы созданы локально. Прослушайте реплики до сборки: технический успех не подтверждает разборчивость речи."
+               if voice_provider == "piper" else
+               "Демо-озвучка готова. Это тишина с длительностью по тексту, не настоящий голос.")
     _append(job, message, 95)
 
 def _validate_local_png(data: bytes, expected_width: int | None = None,
@@ -935,8 +937,12 @@ def _make_frames(project: dict, job: dict) -> None:
                 candidate = (root / image_ref["path"]).resolve()
                 if root.resolve() in candidate.parents and candidate.is_file():
                     bg_path = candidate
-            # Existing renderer's exact drawing function; a static representative frame.
-            image = module.draw_pixar_image(text, hero, scene["id"], W=1920, H=1080, bg_path=bg_path, is_gap=False, bg_strength=0.82 if bg_path else 0.18)
+            # An approved scene image is the actual full-bleed frame, not a faint background
+            # behind the legacy card template. Keep the legacy template only for style-only scenes.
+            if bg_path:
+                image = module.draw_full_bleed_scene(text, hero, scene["id"], bg_path, W=1920, H=1080)
+            else:
+                image = module.draw_pixar_image(text, hero, scene["id"], W=1920, H=1080, is_gap=False)
             generated = frame_dir / f".{scene['id']}-{job['id']}.partial.jpg"
             image.save(generated, "JPEG", quality=91)
             if native_v2:

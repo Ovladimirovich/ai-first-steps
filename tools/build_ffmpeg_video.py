@@ -10,7 +10,7 @@ usage:
   python tools/build_ffmpeg_video.py --output preview/test.mp4 --no-audio
   python tools/build_ffmpeg_video.py --only 5                 # первые 5 реплик для теста 20 сек
 """
-import argparse, json, os, sys, textwrap, math, subprocess
+import argparse, json, os, sys, textwrap, math, subprocess, re
 from importlib import import_module
 
 MOVIEPY_COMPAT_REQUIREMENT = "moviepy==1.0.3"
@@ -298,6 +298,47 @@ def draw_pixar_frame(text, who, scene, s, W=1920, H=1080, bg_img=None, karaoke_f
     draw.rounded_rectangle([px, py, px+int(pw*prog), py+int(6*scale)], radius=3, fill=hex_to_rgb(P["yellow"])+(opacity,))
     return img
 
+def draw_full_bleed_scene(text, who, scene, bg_path, W=1920, H=1080, is_gap=False):
+    """Use the approved scene artwork as the actual frame, with restrained readable captions."""
+    from PIL import Image, ImageDraw, ImageOps
+    source = Image.open(bg_path).convert("RGB")
+    image = ImageOps.fit(source, (W, H), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    # A bottom gradient preserves artwork while keeping captions legible; avoid the old center card.
+    start_y = int(H * 0.60)
+    for y in range(start_y, H):
+        alpha = int(190 * (y - start_y) / max(1, H - start_y))
+        draw.line((0, y, W, y), fill=(6, 12, 24, alpha))
+    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    scale = H / 1080
+    title_font = get_font(max(18, int(30 * scale)), bold=True)
+    body_font = get_font(max(24, int(48 * scale)), bold=True)
+    name_font = get_font(max(16, int(25 * scale)), bold=True)
+    margin_x, margin_bottom = int(96 * scale), int(88 * scale)
+    title = SCENE_TITLES.get(scene, f"Сцена {scene}")
+    draw.text((margin_x + 2, int(54 * scale) + 2), title, font=title_font, fill=(0, 0, 0, 170), stroke_width=2)
+    draw.text((margin_x, int(54 * scale)), title, font=title_font, fill=(255, 255, 255), stroke_width=1,
+              stroke_fill=(0, 0, 0))
+    if not is_gap and text.strip():
+        name = "БИТ" if who == "b" else "МАША"
+        name_y = H - margin_bottom - int(126 * scale)
+        accent = (46, 230, 214) if who == "b" else (255, 107, 107)
+        draw.rounded_rectangle((margin_x, name_y, margin_x + int(8 * scale), name_y + int(32 * scale)),
+                               radius=max(2, int(4 * scale)), fill=accent)
+        draw.text((margin_x + int(22 * scale), name_y - int(2 * scale)), name, font=name_font,
+                  fill=(255, 220, 90) if who == "b" else (255, 160, 160))
+        max_width = W - margin_x * 2
+        lines = wrap_text(text, body_font, max_width, draw)
+        line_height = int(58 * scale)
+        caption_y = H - margin_bottom - len(lines) * line_height
+        for index, line in enumerate(lines):
+            draw.text((margin_x, caption_y + index * line_height), line, font=body_font,
+                      fill=(255, 255, 255), stroke_width=max(1, int(2 * scale)), stroke_fill=(0, 0, 0))
+    return image
+
+
 def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=False, bg_strength=0.18):
     """
     Рисует 1920x1080 кадр в стиле PixarCard через Pillow:
@@ -441,6 +482,31 @@ def draw_pixar_image(text, who, scene, W=1920, H=1080, bg_path=None, is_gap=Fals
 
     return img
 
+
+def find_scene_background(scene_id, scene_bg_dir):
+    if not scene_bg_dir:
+        return None
+    directory = Path(scene_bg_dir)
+    if not directory.is_dir():
+        return None
+    safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
+    for pattern in (f"{safe_scene}.jpg", f"scene_{safe_scene}.jpg",
+                    f"{safe_scene}.jpeg", f"scene_{safe_scene}.jpeg",
+                    f"{safe_scene}.png", f"scene_{safe_scene}.png"):
+        candidate = directory / pattern
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def render_static_scene_frame(text, who, scene, *, scene_bg_dir=None, fallback_bg=None,
+                              W=1920, H=1080, is_gap=False):
+    selected = find_scene_background(scene, scene_bg_dir)
+    if selected:
+        return draw_full_bleed_scene(text, who, scene, selected, W=W, H=H, is_gap=is_gap)
+    return draw_pixar_image(text, who, scene, W=W, H=H, bg_path=fallback_bg, is_gap=is_gap)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", "-o", default=str(OUT_DEFAULT), help="выходной mp4")
@@ -528,15 +594,11 @@ def main():
                 bg_path = p; break
     # --- добавлено из b2a47ef: директория сценных фонов ---
     scene_bg_dir = Path(args.scene_bg_dir).resolve() if args.scene_bg_dir else None
+    def scene_image_for(scene_id):
+        return find_scene_background(scene_id, scene_bg_dir)
+
     def bg_for_scene(scene_id):
-        if scene_bg_dir and scene_bg_dir.is_dir():
-            safe_scene = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(str(scene_id)).name)
-            # Поддерживаем оба паттерна: <ID>.jpg и scene_<ID>.jpg
-            for pattern in (f"{safe_scene}.jpg", f"scene_{safe_scene}.jpg", f"{safe_scene}.jpeg", f"scene_{safe_scene}.jpeg", f"{safe_scene}.png", f"scene_{safe_scene}.png"):
-                candidate = scene_bg_dir / pattern
-                if candidate.is_file():
-                    return candidate
-        return bg_path
+        return scene_image_for(scene_id) or bg_path
 
     # --- новый рендерер «мультфильм с персонажами» ---
     renderer = None
@@ -911,7 +973,8 @@ def main():
             img_path = cache[key]
         else:
             is_gap = typ=="gap"
-            img = draw_pixar_image(text, who, scene, W=W, H=H, bg_path=bg_path, is_gap=is_gap)
+            img = render_static_scene_frame(text, who, scene, scene_bg_dir=scene_bg_dir,
+                                            fallback_bg=bg_path, W=W, H=H, is_gap=is_gap)
             img_path = tmpdir / f"seg_{idx:03d}_{typ}_{scene.replace('.','_')}.png"
             img.save(img_path, "PNG", compress_level=1)
             cache[key] = img_path

@@ -18,7 +18,7 @@ from .fingerprints import changed_dependencies, project_fingerprints, verify_ass
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = ROOT / ".factory" / "projects"
-RENDERER_VERSION = "factory-ffmpeg-segments-v3"
+RENDERER_VERSION = "factory-ffmpeg-segments-v4-image-first"
 DEFAULT_HEROES = [
     {"id": "h1", "name": "Бит", "role": "explains", "about": "добрый робот-кубик", "look": "бирюзовый кубик", "voice": {"provider": "demo", "voice_id": "male-warm", "rate": 1.0}},
     {"id": "h2", "name": "Маша", "role": "asks", "about": "любознательная школьница", "look": "худи и рюкзак", "voice": {"provider": "demo", "voice_id": "female-young", "rate": 1.0}},
