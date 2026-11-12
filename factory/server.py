@@ -5,7 +5,6 @@ import io
 import json
 import mimetypes
 import re
-import threading
 import time
 import uuid
 import urllib.parse
@@ -19,12 +18,28 @@ from .assets import register_asset_bytes
 from .drafts import commit_project_draft, get_project_draft, save_project_draft
 from .migrations import apply_v1_migration, migration_plan
 from .pipeline import get_job, plan, run
-from .providers import ProviderError, draft_with_gigachat, draft_with_llama, test_connection, test_gigachat_connection
-from .settings import gigachat_credentials, load_settings, save_settings
+from .actions import action_views, get_action, verify_action_log
+from .action_service import (apply_action, confirm_action, get_candidate, propose_script_draft,
+                             reject_action, retry_action_job)
+from .jobs import cancel_job, list_jobs, recover_jobs
+from .providers import ProviderError, test_connection, check_gigachat_connection
+from .settings import SETTINGS_PATH, gigachat_credentials, load_settings, save_settings
+from .voice import check_piper_settings
+from .comfyui import (ComfyUIError, check_comfyui_connection,
+                     discover_local_txt2img_profile, export_local_txt2img_workflow, get_comfyui_object_info)
+from .comfyui_profiles import inspect_agnes_image_profile
+from .visuals import (create_visual_variant, deselect_visual_variant, list_visual_variants,
+                      reject_visual_variant, review_visual_variant, select_visual_variant,
+                      update_visual_prompt)
 
 WEB = Path(__file__).resolve().parent / "web"
-TEXT_PROVIDER_LOCK = threading.Lock()
 
+def _legacy_job_state(job):
+    if not job:
+        return job
+    mapped = dict(job)
+    mapped["state"] = {"completed": "done", "failed": "error", "cancelled": "error"}.get(job.get("state"), job.get("state"))
+    return mapped
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "AIVideoFactory/0.1"
@@ -87,12 +102,40 @@ class Handler(BaseHTTPRequestHandler):
             if base not in candidate.parents:
                 return self.send_error(404)
             return self._file(candidate)
+        if path.startswith("/api/settings/voice/samples/"):
+            sample = path.removeprefix("/api/settings/voice/samples/")
+            if sample not in ("h1.wav", "h2.wav"):
+                return self.send_error(404)
+            sample_dir = (SETTINGS_PATH.parent / "voice-tests").resolve()
+            candidate = (sample_dir / sample).resolve()
+            if sample_dir not in candidate.parents:
+                return self.send_error(404)
+            return self._file(candidate)
         if path == "/api/settings":
             return self._json(200, load_settings())
+        if path == "/api/settings/comfyui/local-profile":
+            try:
+                return self._json(200, discover_local_txt2img_profile(load_settings()))
+            except ComfyUIError as exc:
+                return self._error(exc, 400)
+        if path == "/api/settings/comfyui/agnes-profile":
+            try:
+                profile = inspect_agnes_image_profile(get_comfyui_object_info(load_settings()))
+                return self._json(200, profile)
+            except (ComfyUIError, ValueError) as exc:
+                return self._error(exc, 400)
         if path == "/api/projects":
             return self._json(200, {"projects": list_projects()})
         if path.startswith("/api/projects/"):
             parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[3] == "visual-variants":
+                try:
+                    scene_id = urllib.parse.parse_qs(parsed.query).get("scene_id", [None])[0]
+                    return self._json(200, list_visual_variants(parts[2], scene_id))
+                except FileNotFoundError:
+                    return self._error("Ролик или визуальный вариант не найден", 404)
+                except ValueError as exc:
+                    return self._error(exc, 409)
             if len(parts) == 4 and parts[3] == "studio":
                 try:
                     return self._json(200, get_studio_document(parts[2]))
@@ -142,10 +185,12 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     p = load_project(project_id)
                     job_id = urllib.parse.parse_qs(parsed.query).get("job", [""])[0]
-                    job = get_job(job_id) if job_id else None
-                    return self._json(200, {"artifacts": artifact_state(p), "job": job})
+                    job = get_job(job_id, project_id) if job_id else None
+                    return self._json(200, {"artifacts": artifact_state(p), "job": _legacy_job_state(job)})
                 except FileNotFoundError:
                     return self._error("Ролик не найден", 404)
+                except ValueError as exc:
+                    return self._error(exc, 503)
             if len(parts) == 4 and parts[3] == "artifacts":
                 try:
                     return self._json(200, artifact_state(load_project(parts[2])))
@@ -153,8 +198,39 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error("Ролик не найден", 404)
             if len(parts) == 4 and parts[3] == "jobs":
                 job_id = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
-                job = get_job(job_id)
-                return self._json(200, job or {"state": "missing"})
+                if not job_id:
+                    return self._json(200, {"jobs": list_jobs(parts[2])})
+                try:
+                    job = get_job(job_id, parts[2])
+                    return self._json(200, _legacy_job_state(job) or {"state": "missing"})
+                except ValueError as exc:
+                    return self._error(exc, 503)
+            if len(parts) == 5 and parts[3] == "jobs":
+                try:
+                    job = get_job(parts[4], parts[2])
+                    return self._json(200, job or {"state": "missing"})
+                except ValueError as exc:
+                    return self._error(exc, 503)
+            if len(parts) == 4 and parts[3] == "actions":
+                try:
+                    journal = verify_action_log(parts[2])
+                    return self._json(200, {"valid": journal["valid"], "event_count": journal["event_count"],
+                                            "latest_event_hash": journal["latest_event_hash"],
+                                            "events": journal["events"], "actions": action_views(parts[2])})
+                except ValueError as exc:
+                    return self._error(exc, 409)
+            if len(parts) == 5 and parts[3] == "actions":
+                try:
+                    action = get_action(parts[2], parts[4])
+                    if action.get("status") in ("candidate_ready", "apply_pending"):
+                        candidate = get_candidate(parts[2], parts[4])
+                        action["candidate_spec"] = candidate["spec"]
+                        action["base_spec"] = candidate["base_spec"]
+                    return self._json(200, action)
+                except FileNotFoundError:
+                    return self._error("Действие не найдено", 404)
+                except ValueError as exc:
+                    return self._error(exc, 409)
             if len(parts) == 3:
                 try:
                     return self._json(200, load_project(parts[2]))
@@ -170,7 +246,80 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/projects":
                 project = create_project(body)
                 return self._json(201, project)
-            if len(parts := path.strip("/").split("/")) == 5 and parts[:2] == ["api", "projects"] and parts[3:] == ["migration", "apply"]:
+            parts = path.strip("/").split("/")
+            if path == "/api/settings/comfyui/test":
+                settings = load_settings()
+                settings["comfyui_base_url"] = body.get("base_url", settings.get("comfyui_base_url"))
+                saved = save_settings(settings)
+                return self._json(200, check_comfyui_connection(saved))
+            if path == "/api/settings/comfyui/local-profile/workflow":
+                workflow = export_local_txt2img_workflow(load_settings(), body)
+                return self._json(200, {**workflow, "submitted": False,
+                                        "message": "Workflow JSON сформирован; в ComfyUI он не отправлялся."})
+            if path == "/api/settings/voice/test":
+                settings = load_settings()
+                if settings.get("voice_provider") != "piper":
+                    return self._error("Сначала выберите Piper в настройках озвучки.")
+                return self._json(200, check_piper_settings(settings, SETTINGS_PATH.parent / "voice-tests"))
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "visual-variants":
+                scene_id = str(body.get("scene_id", ""))
+                data_url = str(body.get("data_url", ""))
+                match = re.fullmatch(r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)", data_url)
+                if not scene_id or not match:
+                    return self._error("Укажите сцену и выберите изображение PNG, JPG или WebP")
+                try:
+                    image_bytes = base64.b64decode(match.group(2), validate=True)
+                    if len(image_bytes) > 3_500_000:
+                        return self._error("Вариант изображения слишком большой (максимум 3,5 МБ)")
+                    from PIL import Image
+                    with Image.open(io.BytesIO(image_bytes)) as image:
+                        width, height = image.size
+                        image_format = str(image.format or "").upper()
+                        image.verify()
+                    expected = {"png": ("PNG", ".png", "image/png"),
+                                "jpeg": ("JPEG", ".jpg", "image/jpeg"),
+                                "webp": ("WEBP", ".webp", "image/webp")}[match.group(1)]
+                    if image_format != expected[0] or width <= 0 or height <= 0 or width > 8192 or height > 8192 or width * height > 40_000_000:
+                        return self._error("Формат или размеры изображения не поддерживаются (максимум 8192×8192)")
+                except Exception as exc:
+                    return self._error(f"Не удалось проверить изображение: {exc}")
+                result = create_visual_variant(parts[2], scene_id, image_bytes,
+                                               expected_revision=int(body.get("expected_revision", -1)),
+                                               mime=expected[2], extension=expected[1],
+                                               prompt=body.get("prompt"))
+                return self._json(201, result)
+            if len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "visual-variants":
+                asset_id, verb = parts[4], parts[5]
+                if verb == "review":
+                    return self._json(200, review_visual_variant(parts[2], asset_id))
+                if verb == "select":
+                    return self._json(200, select_visual_variant(parts[2], asset_id,
+                                                                 int(body.get("expected_revision", -1))))
+                if verb == "deselect":
+                    return self._json(200, deselect_visual_variant(parts[2], asset_id,
+                                                                   int(body.get("expected_revision", -1))))
+                if verb == "reject":
+                    return self._json(200, reject_visual_variant(parts[2], asset_id,
+                                                                 int(body.get("expected_revision", -1))))
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "actions":
+                if body.get("kind", "script-draft") != "script-draft":
+                    return self._error("Поддерживается только действие script-draft")
+                return self._json(201, propose_script_draft(parts[2]))
+            if len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "actions":
+                action_id, verb = parts[4], parts[5]
+                if verb == "confirm":
+                    return self._json(202, confirm_action(parts[2], action_id, body))
+                if verb == "apply":
+                    return self._json(200, apply_action(parts[2], action_id, body))
+                if verb == "reject":
+                    return self._json(200, reject_action(parts[2], action_id))
+            if len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "jobs":
+                job_id, verb = parts[4], parts[5]
+                if verb == "cancel":
+                    return self._json(200, cancel_job(parts[2], job_id))
+                if verb == "retry":
+                    return self._json(202, retry_action_job(parts[2], job_id, body))
+            if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3:] == ["migration", "apply"]:
                 result = apply_v1_migration(parts[2], int(body.get("expected_revision", 0)),
                                             str(body.get("source_fingerprint", "")))
                 return self._json(200, result)
@@ -183,7 +332,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/settings/test":
                 settings = load_settings()
                 if settings["text_provider"] == "gigachat":
-                    return self._json(200, test_gigachat_connection(gigachat_credentials()))
+                    return self._json(200, check_gigachat_connection(gigachat_credentials()))
                 if settings["text_provider"] == "llama_cpp":
                     return self._json(200, test_connection(settings))
                 return self._error("Сначала выберите помощника в настройках.")
@@ -231,34 +380,16 @@ class Handler(BaseHTTPRequestHandler):
                 project = load_project(parts[2])
                 action = parts[3]
                 if action == "script-draft":
-                    spec = project["spec"]
-                    if not spec.get("intent", {}).get("theme", "").strip():
-                        return self._error("Введите тему ролика")
-                    with TEXT_PROVIDER_LOCK:
-                        settings = load_settings()
-                        if settings["text_provider"] == "llama_cpp":
-                            project["spec"] = draft_with_llama(spec, settings)
-                        elif settings["text_provider"] == "gigachat":
-                            if not settings.get("gigachat_cloud_ack"):
-                                return self._error("Подтвердите в настройках, что сценарий отправляется в облачный GigaChat.")
-                            project["spec"] = draft_with_gigachat(spec, settings, gigachat_credentials())
-                        else:
-                            from .core import draft_script
-                            project["spec"] = draft_script(spec)
-                    validate_spec(project["spec"])
-                    project["revision"] += 1
-                    project["updated_at"] = time.time()
-                    save_project(project)
-                    return self._json(200, project)
-                if action in ("voice-plan", "frames-plan", "render-plan"):
+                    return self._error("Непроверенный прямой draft отключён. Создайте предложение через /actions, подтвердите его, затем отдельно просмотрите и примените кандидат.", 409)
+                if action in ("voice-plan", "frames-plan", "render-plan", "image-plan"):
                     stage = action.removesuffix("-plan").replace("-", "_")
                     if stage == "render":
                         validate_spec(project["spec"])
                     result = plan(project, stage, body.get("kind"))
                     return self._json(200, result)
-                if action in ("voice-run", "frames-run", "render-run"):
+                if action in ("voice-run", "frames-run", "render-run", "image-run"):
                     stage = action.removesuffix("-run").replace("-", "_")
-                    job = run(project, str(body.get("plan_id", "")), stage, body.get("kind"))
+                    job = run(project, str(body.get("plan_id", "")), stage, body.get("kind"), body.get("confirmation"))
                     return self._json(202, job)
             return self.send_error(404)
         except FileNotFoundError:
@@ -266,7 +397,9 @@ class Handler(BaseHTTPRequestHandler):
         except ProviderError as exc:
             return self._error(exc, 400)
         except ValueError as exc:
-            return self._error(exc, 409 if "устар" in str(exc).lower() or "изменил" in str(exc).lower() else 400)
+            detail = str(exc).lower()
+            status = 409 if any(word in detail for word in ("устар", "изменил", "журнал", "целост", "hash-chain", "отпечаток")) else 400
+            return self._error(exc, status)
         except Exception as exc:
             return self._error(exc, 500)
 
@@ -291,6 +424,16 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError) as exc:
                 return self._error(exc)
         parts = path.strip("/").split("/")
+        if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "visuals":
+            try:
+                body = self._body()
+                result = update_visual_prompt(parts[2], parts[4], body)
+                return self._json(200, result)
+            except FileNotFoundError:
+                return self._error("Ролик не найден", 404)
+            except ValueError as exc:
+                detail = str(exc).lower()
+                return self._error(exc, 409 if "изменил" in detail or "устар" in detail else 400)
         if len(parts) != 3 or parts[:2] != ["api", "projects"]:
             return self.send_error(404)
         try:
@@ -312,8 +455,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError) as exc:
             return self._error(exc)
 
-
 def serve(host="0.0.0.0", port=7860):
+    recovered = recover_jobs()
+    if recovered["queued"] or recovered["interrupted"]:
+        print(f"Восстановление очереди: повторно поставлено {recovered['queued']}, прервано перезапуском {recovered['interrupted']}")
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"AI Video Factory открыта: http://localhost:{port} (слушает {host}:{port})")
     try:
