@@ -217,6 +217,29 @@ class VisualVariantTests(unittest.TestCase):
                 _make_local_image_variant(current, job, self.scene_id)
         generate.assert_not_called()
         self.assertEqual(list_visual_variants(self.project["id"], self.scene_id)["variants"], [])
+    def test_null_agnes_checkpoint_and_approval_fail_closed_without_attribute_error(self):
+        update_visual_prompt(self.project["id"], self.scene_id, {
+            "expected_revision": self.project["revision"], "prompt": "A blue paper boat on a pond",
+            "negative_prompt": "", "description": "", "reference_asset_ids": [],
+        })
+        current = load_project(self.project["id"])
+        job = {"id": "agnes-null-job", "action_id": "agnes-null-action",
+               "project_id": self.project["id"],
+               "payload": {"revision": current["revision"], "generation": {
+                   "profile_id": "comfyui-agnes-image-v1", "provider": "comfyui_agnes",
+                   "seed": 42, "quality": "1K", "aspect_ratio": "4:3"}},
+               "approval": None, "checkpoint": None,
+               "input_fingerprint": "agnes-null-fingerprint", "progress": 0, "log": []}
+        with patch("factory.settings.load_settings", return_value={
+                "comfyui_image_provider": "agnes_image"}), \
+             patch("factory.comfyui.generate_agnes_image") as generate, \
+             patch("factory.pipeline.is_cancel_requested", return_value=False), \
+             patch("factory.pipeline.AGNES_IMAGE_RUNTIME_ENABLED", True):
+            from factory.pipeline import _make_local_image_variant
+            with self.assertRaisesRegex(ValueError, "Нет сохранённого отдельного согласия"):
+                _make_local_image_variant(current, job, self.scene_id)
+        generate.assert_not_called()
+
     def test_interrupted_unknown_comfy_submission_is_never_automatically_repeated(self):
         update_visual_prompt(self.project["id"], self.scene_id, {
             "expected_revision": self.project["revision"], "prompt": "Кораблик на пруду",

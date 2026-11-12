@@ -10,7 +10,20 @@ usage:
   python tools/build_ffmpeg_video.py --output preview/test.mp4 --no-audio
   python tools/build_ffmpeg_video.py --only 5                 # первые 5 реплик для теста 20 сек
 """
-import argparse, json, os, sys, textwrap, math
+import argparse, json, os, sys, textwrap, math, subprocess
+from importlib import import_module
+
+MOVIEPY_COMPAT_REQUIREMENT = "moviepy==1.0.3"
+
+
+def load_moviepy_editor():
+    """Load the MoviePy 1.x API used below; never auto-install incompatible latest 2.x."""
+    try:
+        return import_module("moviepy.editor")
+    except ImportError:
+        print(f"ставлю {MOVIEPY_COMPAT_REQUIREMENT}...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", MOVIEPY_COMPAT_REQUIREMENT], check=True)
+        return import_module("moviepy.editor")
 from pathlib import Path
 
 # --- пути ---
@@ -888,13 +901,8 @@ def main():
     # --- статика 0 (быстро) ---
     clips = []
     # кэш картинок чтобы не перегенерировать одинаковые gap одной сцены
-    try:
-        import moviepy.editor as mpe
-        HAS_MOVIEPY = True
-    except ImportError:
-        print("ставлю moviepy..."); os.system(f"{sys.executable} -m pip install -q moviepy")
-        import moviepy.editor as mpe
-        HAS_MOVIEPY = True
+    mpe = load_moviepy_editor()
+    HAS_MOVIEPY = True
     cache = {}
     for idx, (typ, text, who, scene, dur) in enumerate(segments):
         # ключ кэша
