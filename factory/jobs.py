@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import traceback
 import threading
 import time
 import uuid
@@ -382,13 +383,22 @@ def _worker_loop() -> None:
                         with project_lock(project_id):
                             _finish(_read_job(project_id, job_id), "cancelled")
                     except Exception as exc:
-                        _failed_closed(project_id, job_id, str(exc))
+                        tb = traceback.format_exc()
+                        error_msg = f"{str(exc)}\nTRACEBACK:\n{tb}"
+                        print(f"\n[JOB CANCEL ERROR] project={project_id} job={job_id} error={error_msg}")
+                        _failed_closed(project_id, job_id, error_msg)
                 except Exception as exc:
+                    tb = traceback.format_exc()
+                    error_msg = f"{str(exc)}\nTRACEBACK:\n{tb}"
+                    print(f"\n[JOB ERROR] project={project_id} job={job_id} error={error_msg}")
                     try:
                         with project_lock(project_id):
-                            _finish(_read_job(project_id, job_id), "failed", str(exc))
+                            _finish(_read_job(project_id, job_id), "failed", error_msg)
                     except Exception as journal_error:
-                        _failed_closed(project_id, job_id, str(journal_error))
+                        tb = traceback.format_exc()
+                        error_msg = f"{str(journal_error)}\nTRACEBACK:\n{tb}"
+                        print(f"\n[JOB JOURNAL ERROR] project={project_id} job={job_id} error={error_msg}")
+                        _failed_closed(project_id, job_id, error_msg)
         finally:
             _QUEUE.task_done()
 

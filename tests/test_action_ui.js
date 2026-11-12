@@ -96,11 +96,15 @@ assert.match(html, /Облачный fallback отключён/);
 
 vm.runInContext(`project = { id: 'piper-ui-project', spec: { intent: { theme: 'Piper test', audience: { note: 'Зрители' }, target_duration_s: 30 }, heroes: [{ id: 'h1', name: 'Бит', role: 'explains' }, { id: 'h2', name: 'Маша', role: 'asks' }], look: { style_preset: 'warm_workshop' }, script: { scenes: [] } } }; currentStep = 0; settings = { text_provider: 'demo', llama_cpp_base_url: 'http://127.0.0.1:8081/v1', llama_cpp_model: '', gigachat_model: '', gigachat_cloud_ack: false, gigachat_credentials_configured: false, voice_provider: 'piper', piper_executable: 'piper', piper_model_h1: 'bit.onnx', piper_model_h2: 'masha.onnx' };`, context);
 html = vm.runInContext('renderIntent()', context);
-assert.match(html, /Озвучка · Piper/);
+assert.match(html, /Озвучка · поставщик голоса/);
 assert.match(html, /id="voiceProvider"/);
 assert.match(html, /id="piperModelH1"/);
 assert.match(html, /id="piperModelH2"/);
 assert.match(html, /Piper · локальная речь/);
+assert.match(html, /id="edgeVoiceH1"/);
+assert.match(html, /id="edgeRateH2"/);
+assert.match(html, /edgeRateH1" value=".0%"/);
+assert.match(html, /Edge TTS · нейронные голоса \(облако\)/);
 assert.match(html, /id="piperPreview"/);
 assert.match(html, /короткие локальные пробы/);
 assert.match(source, /audio controls preload="metadata" src="\$\{esc\(voice\.sample_url\)\}"/);
