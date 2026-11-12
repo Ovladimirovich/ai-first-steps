@@ -1,0 +1,22 @@
+{
+  "13": {
+    "class_type": "AgnesImage",
+    "inputs": {
+      "prompt": "маша сидит за компьютером",
+      "quality": "1K",
+      "aspect_ratio": "4:3",
+      "seed": 10195917321165879344
+    }
+  },
+  "3": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": [
+        "13",
+        0
+      ],
+      "prompt": null,
+      "extra_pnginfo": null
+    }
+  }
+}

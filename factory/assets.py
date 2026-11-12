@@ -19,7 +19,8 @@ def _asset_version(manifest: dict, asset_type: str, target: dict) -> int:
 
 def _append_record(project_id: str, *, asset_type: str, target: dict, relative: Path,
                    sha256: str, size_bytes: int, mime: str, source: str,
-                   provenance: str, input_fingerprint: str | None) -> dict:
+                   provenance: str, input_fingerprint: str | None,
+                   metadata: dict | None = None) -> dict:
     root = project_dir(project_id)
     manifest = _read_asset_manifest(root)
     version = _asset_version(manifest, asset_type, target)
@@ -41,6 +42,12 @@ def _append_record(project_id: str, *, asset_type: str, target: dict, relative: 
         "input_fingerprint": input_fingerprint,
         "created_at": time.time(),
     }
+    allowed_metadata = {"prompt", "model", "parameters", "action_id", "created_by",
+                       "prompt_template_version", "profile_id"}
+    for key, value in (metadata or {}).items():
+        if key not in allowed_metadata:
+            raise ValueError(f"Недопустимое provenance-поле ассета: {key}")
+        record[key] = value
     manifest.setdefault("assets", []).append(record)
     atomic_write_json(root / "studio" / "assets.json", manifest)
     return record
@@ -101,7 +108,8 @@ def _create_immutable_blob(data: bytes | None, source_path: Path | None,
 def register_asset_bytes(project_id: str, data: bytes, *, asset_type: str,
                          target: dict, extension: str, mime: str,
                          source: str = "uploaded", provenance: str = "user_upload",
-                         input_fingerprint: str | None = None) -> dict:
+                         input_fingerprint: str | None = None,
+                         metadata: dict | None = None) -> dict:
     """Persist a content-addressed immutable blob and append its manifest record."""
     if not data:
         raise ValueError("Нельзя зарегистрировать пустой ассет")
@@ -114,7 +122,8 @@ def register_asset_bytes(project_id: str, data: bytes, *, asset_type: str,
         _create_immutable_blob(data, None, blob, digest)
         return _append_record(project_id, asset_type=asset_type, target=target, relative=relative,
                               sha256=digest, size_bytes=len(data), mime=mime, source=source,
-                              provenance=provenance, input_fingerprint=input_fingerprint)
+                              provenance=provenance, input_fingerprint=input_fingerprint,
+                              metadata=metadata)
 
 
 def register_asset_file(project_id: str, source_path: Path, *, asset_type: str,

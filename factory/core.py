@@ -209,7 +209,8 @@ def _create_v2_project(project: dict, story: dict, production: dict) -> None:
     atomic_write_json(directory / "project.json", _metadata_only(project))
 
 
-def save_project(project: dict) -> None:
+def save_project(project: dict, *, action_id: str | None = None, actor: str = "user",
+                 reason: str = "accepted_legacy_patch") -> None:
     directory = project_dir(project["id"])
     directory.mkdir(parents=True, exist_ok=True)
     with project_lock(project["id"]):
@@ -259,7 +260,7 @@ def save_project(project: dict) -> None:
                                       production_revision=production_revision,
                                       parent_revision_id=revision_id,
                                       changed_domains=[name for name, changed in (("spec", story_changed), ("production", production_changed)) if changed],
-                                      actor="user", reason="accepted_legacy_patch")
+                                      actor=actor, action_id=action_id, reason=reason)
             revision_id = created["revision_id"]
         atomic_write_json(directory / "studio" / "assets.json", manifest)
         updated = _metadata_only(project)

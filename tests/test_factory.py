@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from factory.core import draft_script, new_spec
 from factory.pipeline import _pending_scene_count, _segment_key, plan, run
-from factory.providers import ProviderError, _base_url, draft_with_gigachat, draft_with_llama, test_gigachat_connection
+from factory.providers import ProviderError, _base_url, draft_with_gigachat, draft_with_llama, check_gigachat_connection
 from factory.timing import timing_for
 
 
@@ -47,11 +47,43 @@ class FactoryTimingTests(unittest.TestCase):
             {"title": "Объяснение", "purpose": "point", "goal": "Понять", "visual_note": "Свет", "lines": [{"hero": "h1", "text": "Свет состоит из разных цветов."}]},
             {"title": "Вывод", "purpose": "payoff", "goal": "Запомнить", "visual_note": "Радуга", "lines": [{"hero": "h2", "text": "Теперь я знаю ответ!"}]},
         ]})}}]}
-        with patch("factory.providers._request_json", side_effect=[{"data": [{"id": "Qwen-local"}]}, response]):
+        with patch("factory.providers._request_json", side_effect=[{"data": [{"id": "Qwen-local"}]}, response]) as request:
             result = draft_with_llama(spec, {"llama_cpp_base_url": "http://127.0.0.1:8081", "llama_cpp_model": ""})
+        self.assertEqual(request.call_args_list[1].args[1]["response_format"], {"type": "json_object"})
         self.assertEqual(result["script"]["generator"]["provider"], "llama_cpp")
         self.assertEqual(len(result["script"]["scenes"]), 3)
         self.assertEqual(result["script"]["scenes"][0]["lines"][0]["id"], "l1")
+
+    def test_llama_cpp_malformed_json_gets_one_local_repair_attempt(self):
+        spec = new_spec("Почему небо голубое?", duration=30)
+        valid = {"scenes": [
+            {"title": "Вопрос", "purpose": "hook", "lines": [{"hero": "h2", "text": "Почему небо голубое?"}]},
+            {"title": "Свет", "purpose": "point", "lines": [{"hero": "h1", "text": "Свет состоит из цветов."}]},
+            {"title": "Вывод", "purpose": "payoff", "lines": [{"hero": "h2", "text": "Теперь я знаю ответ."}]},
+        ]}
+        responses = [
+            {"choices": [{"message": {"content": '{"scenes": [не JSON'}}]},
+            {"choices": [{"message": {"content": json.dumps(valid, ensure_ascii=False)}}]},
+        ]
+        with patch("factory.providers._request_json", side_effect=responses) as request:
+            result = draft_with_llama(spec, {"llama_cpp_base_url": "http://127.0.0.1:8081/v1", "llama_cpp_model": "Qwen-local"})
+        self.assertEqual(len(result["script"]["scenes"]), 3)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn('{"scenes": [не JSON', request.call_args_list[1].args[1]["messages"][2]["content"])
+
+    def test_llama_cpp_falls_back_when_server_rejects_json_mode(self):
+        spec = new_spec("Почему небо голубое?", duration=30)
+        scenes = [{"title": title, "purpose": purpose, "lines": [{"hero": hero, "text": text}]}
+                  for title, purpose, hero, text in [
+                      ("Вопрос", "hook", "h2", "Откуда берётся небо?"),
+                      ("Свет", "point", "h1", "Свет состоит из цветов."),
+                      ("Вывод", "payoff", "h2", "Теперь я знаю ответ.")]]
+        response = {"choices": [{"message": {"content": json.dumps({"scenes": scenes}, ensure_ascii=False)}}]}
+        with patch("factory.providers._request_json", side_effect=[ProviderError("400: unsupported response_format"), response]) as request:
+            result = draft_with_llama(spec, {"llama_cpp_base_url": "http://127.0.0.1:8081/v1", "llama_cpp_model": "Qwen-local"})
+        self.assertEqual(len(result["script"]["scenes"]), 3)
+        self.assertIn("response_format", request.call_args_list[0].args[1])
+        self.assertNotIn("response_format", request.call_args_list[1].args[1])
 
     def test_gigachat_adapter_uses_chat_api_response(self):
         spec = new_spec("Почему появляется радуга?", duration=30)
@@ -67,9 +99,31 @@ class FactoryTimingTests(unittest.TestCase):
         self.assertEqual(call.call_args_list[0].args[0], "/models")
         self.assertEqual(call.call_args_list[1].args[0], "/chat/completions")
 
+    def test_gigachat_malformed_json_gets_one_repair_attempt(self):
+        spec = new_spec("Почему небо голубое?", duration=30)
+        scenes = {"scenes": [
+            {"title": "Вопрос", "purpose": "hook", "lines": [{"hero": "h2", "text": "Откуда берётся небо?"}]},
+            {"title": "Свет", "purpose": "point", "lines": [{"hero": "h1", "text": "Солнечный свет складывается из цветов."}]},
+            {"title": "Вывод", "purpose": "payoff", "lines": [{"hero": "h2", "text": "Теперь я знаю, как он появляется."}]},
+        ]}
+        good = {"choices": [{"message": {"content": json.dumps(scenes, ensure_ascii=False)}}]}
+        with patch("factory.providers._gigachat_api", side_effect=[
+            {"data": [{"id": "GigaChat"}]},
+            {"choices": [{"message": {"content": "{bad json"}}]},
+            good,
+        ]) as call:
+            result = draft_with_gigachat(spec, {"gigachat_model": ""}, {"client_id": "x", "client_secret": "y"})
+        self.assertEqual(result["script"]["generator"]["provider"], "gigachat")
+        self.assertEqual(len(result["script"]["scenes"]), 3)
+        self.assertEqual(call.call_args_list[0].args[0], "/models")
+        self.assertEqual(call.call_args_list[1].args[0], "/chat/completions")
+        self.assertEqual(call.call_args_list[2].args[0], "/chat/completions")
+        repair_payload = call.call_args_list[2].args[2]
+        self.assertEqual(repair_payload["temperature"], 0.1)
+
     def test_gigachat_requires_credentials(self):
         with self.assertRaisesRegex(ProviderError, "GIGACHAT_CLIENT_ID"):
-            test_gigachat_connection({"client_id": "", "client_secret": ""})
+            check_gigachat_connection({"client_id": "", "client_secret": ""})
 
     def test_llama_endpoint_is_local_and_normalized(self):
         self.assertEqual(_base_url("http://127.0.0.1:8081"), "http://127.0.0.1:8081/v1")

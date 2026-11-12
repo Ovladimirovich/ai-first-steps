@@ -44,5 +44,9 @@ Desktop.ini
 .env.*.local
 
 # Python
+.venv/
 __pycache__/
 *.pyc
+
+# Scratch space (not part of the project)
+scratch/

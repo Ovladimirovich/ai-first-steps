@@ -6,7 +6,11 @@
 
 ## AI Video Factory (локальный прототип)
 
-В репозитории появился русскоязычный конвейер создания роликов поверх существующего FFmpeg-движка. Инструкция по запуску: [docs/factory/README.md](docs/factory/README.md), утверждённый план: [docs/factory/PLAN.md](docs/factory/PLAN.md). По умолчанию используется демо-сценарий и честно обозначенная тихая аудиозаглушка; для текста можно выбрать локальный llama.cpp или облачный GigaChat. Кадры рисуются прежним рендерером или загружаются для отдельной сцены, MP4 настоящий. Локальный запуск: `python -m factory --host 127.0.0.1` → `http://localhost:7860`.
+В репозитории развивается русскоязычная мастерская создания роликов поверх существующего FFmpeg-движка. Запуск: [docs/factory/README.md](docs/factory/README.md); актуальные статусы и следующий план: [docs/factory/ROADMAP.md](docs/factory/ROADMAP.md); архитектурные основания: [docs/factory/PLAN.md](docs/factory/PLAN.md). Демо-сценарий и тихая аудиозаглушка остаются безопасными настройками по умолчанию. Для текста доступны локальный llama.cpp и опциональный облачный GigaChat. Кадры рисуются прежним рендерером, загружаются пользователем или генерируются через **ComfyUI** (локальный txt2img pipeline; профиль `comfyui-core-txt2img-v1`, модель `cyberrealistic_v80.safetensors`).
+
+**Запуск:**
+- `run.bat` — для интерактивной работы (запускает сервер и открывает браузер на `http://localhost:7860`)
+- `scratch/_run_test.py` — автоматический тестовый оркестратор (поднимает сервер в фоне и запускает `scratch/_test_a2.py`; каталог `scratch/` не входит в репозиторий)
 
 > **Ветка `arena/750486c0-ai-first-steps` самодостаточна** — `main` не нужен. Клонируй её: `git clone --branch arena/750486c0-ai-first-steps https://github.com/Ovladimirovich/ai-first-steps.git`
 

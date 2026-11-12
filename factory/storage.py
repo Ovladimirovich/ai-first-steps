@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 import json
 import os
+import sys
 import tempfile
 import threading
 from contextlib import contextmanager
@@ -13,7 +12,9 @@ _LOCKS_GUARD = threading.Lock()
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
-    """Write one JSON file using a same-directory temporary file and atomic replace."""
+    """Write one JSON file. Try atomic temp + os.replace everywhere;
+    on Windows, fall back to direct write only on PermissionError (locked file).
+    Temp file is cleaned up in both cases."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
@@ -23,13 +24,29 @@ def atomic_write_json(path: Path, value: Any) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp_name, path)
+        try:
+            os.replace(temp_name, path)
+        except PermissionError:
+            if sys.platform == "win32":
+                # os.replace / rename fails with PermissionError when the target
+                # file is locked (antivirus, indexer, or another reader).
+                # Fall back to direct write — good enough for single-process factory.
+                path.write_text(payload, encoding="utf-8", newline="\n")
+            else:
+                raise
     except Exception:
         try:
             os.unlink(temp_name)
         except OSError:
             pass
         raise
+    finally:
+        # If os.replace succeeded, temp_name no longer exists — unlink is a no-op.
+        # If direct-write fallback was used, temp_name still exists and must be removed.
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
 
 
 def read_json(path: Path, default: Any = None) -> Any:

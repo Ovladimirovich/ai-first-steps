@@ -166,6 +166,26 @@ def project_fingerprints(project: dict, *, story: dict | None = None,
 
     legacy = v2_to_v1(story, production, manifest)
     timing = timing_for(legacy)
+    from .settings import load_settings
+    runtime_voice_settings = load_settings()
+    voice_provider = str(runtime_voice_settings.get("voice_provider", "demo"))
+    image_profile = str(runtime_voice_settings.get("comfyui_image_profile", "local"))
+    runtime_image_profile = {
+        "profile": image_profile,
+        "profile_id": "comfyui-agnes-t2i-v1" if image_profile == "agnes" else "comfyui-core-txt2img-v1",
+        "base_url": runtime_voice_settings.get("comfyui_base_url", "http://127.0.0.1:8188"),
+        "model": runtime_voice_settings.get("comfyui_local_model", ""),
+        "quality": str(runtime_voice_settings.get("comfyui_agnes_quality", "1K")),
+        "aspect_ratio": str(runtime_voice_settings.get("comfyui_agnes_aspect_ratio", "4:3")),
+        "preprocess_prompt": bool(runtime_voice_settings.get("comfyui_agnes_preprocess_prompt", True)),
+        "width": 512, "height": 512, "steps": 20, "cfg": 7.0,
+    }
+    if voice_provider == "piper":
+        voice_engine_version = "factory-piper-cli-v1"
+    elif voice_provider == "edge":
+        voice_engine_version = "factory-edge-tts-v1"
+    else:
+        voice_engine_version = VOICE_ENGINE_VERSION
     scenes = sorted(story.get("script", {}).get("scenes", []), key=lambda item: item.get("order", 0))
     legacy_scenes = {str(scene.get("id")): scene for scene in legacy.get("script", {}).get("scenes", [])}
     heroes = {str(hero.get("id")): hero for hero in story.get("heroes", [])}
@@ -202,17 +222,27 @@ def project_fingerprints(project: dict, *, story: dict | None = None,
             hero_voice = hero_voices.get(hero_id, {})
             delivery = dialogue.get(line_id, {})
             row = timing_by_line.get(line_id, {})
+            provider_generation = {
+                "voice_generation": production.get("voice_generation", production.get("tts", {})),
+                "models": production.get("models", {}),
+                "providers": production.get("providers", {}),
+                "voice_prompt_template": production.get("voice_prompt_template", ""),
+            }
+            if voice_provider == "piper":
+                from .voice import executable_signature, model_signature
+                provider_generation["runtime_voice"] = {
+                    "provider": "piper", "executable": executable_signature(runtime_voice_settings),
+                    "model": model_signature(runtime_voice_settings, hero_id),
+                }
+            elif voice_provider == "edge":
+                from .tts_edge import edge_signature
+                provider_generation["runtime_voice"] = edge_signature(runtime_voice_settings, hero_id)
             dependencies = _dep_hashes(
                 line_content={"line_id": line_id, "text": line.get("text", ""), "hero_id": hero_id},
                 voice_selection=hero_voice,
                 line_delivery=delivery,
-                provider_model_and_generation={
-                    "voice_generation": production.get("voice_generation", production.get("tts", {})),
-                    "models": production.get("models", {}),
-                    "providers": production.get("providers", {}),
-                    "voice_prompt_template": production.get("voice_prompt_template", ""),
-                },
-                duration_and_parameters={"duration_s": row.get("dur"), "engine": VOICE_ENGINE_VERSION},
+                provider_model_and_generation=provider_generation,
+                duration_and_parameters={"duration_s": row.get("dur"), "engine": voice_engine_version},
             )
             voice_lines[line_id] = {"fingerprint": _combine(dependencies), "dependencies": dependencies}
 
@@ -245,6 +275,7 @@ def project_fingerprints(project: dict, *, story: dict | None = None,
                 "generation": global_image_config,
                 "model": visual.get("model", production.get("image_model", {})),
                 "prompt_template_version": visual.get("prompt_template_version", production.get("image_prompt_template_version")),
+                "runtime_image_profile": runtime_image_profile,
             },
             reference_assets=[item["fingerprint"] for item in references],
         )

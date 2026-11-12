@@ -5,37 +5,9 @@
   <title>AI Video Factory</title><link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="topbar"><a class="brand" href="/"><span class="brand-mark">✦</span><span>video<span class="brand-light">factory</span><small>локальная мастерская</small></span></a><div id="projectTitle" class="project-title">Новый ролик</div><div class="provider-selector">
-  <label class="provider-label">Поставщик текста:</label>
-  <select id="textProvider" class="provider-select">
-    <option value="demo" Demo>Демо-режим</option>
-    <option value="llama_cpp" LlamaCpp>Локальный Llama.cpp</option>
-    <option value="gigachat" GigaChat>GigaChat (облако)</option>
-  </select>
-</div>
-
-<!-- Gigachat fields (shown when GigaChat is selected) -->
-<div id="gigachatFields" class="gigachat-fields hidden">
-  <div class="form-row">
-    <label>Модель:</label>
-    <select id="gigachatModel" class="provider-select">
-      <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
-      <option value="gpt-4">gpt-4</option>
-      <option value="claude-3">claude-3</option>
-    </select>
-  </div>
-  <div class="form-row">
-    <label class="checkbox-label">
-      <input type="checkbox" id="gigachatAck">
-      Согласен на передачу данных в GigaChat (SberCloud)
-    </label>
-  </div>
-  <button id="testGiga" class="button-small">Тестировать соединение</button>
-</div>
-
-<div class="demo-badge" title="Сценарий и озвучка — демонстрационные. Видео собирается по-настоящему."><i></i> Демо-режим</div></header>
+  <header class="topbar"><a class="brand" href="/"><span class="brand-mark">✦</span><span>video<span class="brand-light">factory</span><small>локальная мастерская</small></span></a><div id="projectTitle" class="project-title">Новый ролик</div><div class="demo-badge" title="Режим помощника и статус медиа показаны в проекте."><i></i> Локальная мастерская</div></header>
   <div class="layout">
-    <aside class="sidebar"><div class="side-label">ВАШ РОЛИК</div><nav id="steps" class="steps"></nav><div class="side-bottom"><div class="local-mark"><span>●</span> Всё хранится на этом компьютере</div><button id="newProject" class="quiet-button">＋ Новый ролик</button></div></aside>
+    <aside class="sidebar"><div class="side-label">ШАГИ РАБОТЫ</div><nav id="steps" class="steps"></nav><section class="project-library"><div class="side-label">МОИ РОЛИКИ</div><div id="projectList" class="project-list"></div></section><div class="side-bottom"><div class="local-mark"><span>●</span> Всё хранится на этом компьютере</div><button id="newProject" class="quiet-button">＋ Новый ролик</button></div></aside>
     <main id="main" class="main"><div class="loading">Загружаю мастерскую…</div></main>
     <aside class="preview-rail"><div class="rail-head"><span>ПРЕДПРОСМОТР</span><span class="live-dot"></span></div><div id="preview" class="preview-card"><div class="preview-art"><div class="sun"></div><div class="preview-cube">B</div><div class="preview-caption">Идея → история → видео</div></div><p>Ваш ролик появится здесь по мере работы.</p></div><div id="statusCard" class="status-card"></div></aside>
   </div>
