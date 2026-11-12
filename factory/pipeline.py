@@ -821,13 +821,12 @@ def _make_local_image_variant(project: dict, job: dict, scene_id: str) -> None:
         job["progress"] = max(int(job.get("progress", 0)), 25)
         persist_job(job)
 
-    saved_checkpoint = job.get("checkpoint", {})
+    saved_checkpoint = job.get("checkpoint") or {}
     if provider == "comfyui_agnes":
-        approval = job.get("approval", {})
+        approval = job.get("approval") or {}
         if (approval.get("privacy_scope") != "cloud" or approval.get("consent") is not True
                 or approval.get("cloud_consent") is not True):
             raise ValueError("Нет сохранённого отдельного согласия на Agnes cloud request")
-        saved_checkpoint = job.get("checkpoint", {})
         if saved_checkpoint.get("stage") == "comfyui_submission_in_flight":
             raise ValueError("Результат предыдущей отправки Agnes неизвестен; проверьте очередь, повторной отправки не будет")
         if saved_checkpoint.get("stage") not in (None, "comfyui_prompt_submitted"):
@@ -848,7 +847,7 @@ def _make_local_image_variant(project: dict, job: dict, scene_id: str) -> None:
                               if saved_checkpoint.get("stage") == "comfyui_prompt_submitted" else None),
         )
     else:
-        saved_checkpoint = job.get("checkpoint", {})
+        saved_checkpoint = job.get("checkpoint") or {}
         if saved_checkpoint.get("stage") == "comfyui_submission_in_flight":
             raise ValueError("Предыдущая отправка ComfyUI имеет неизвестный результат; проверьте локальную очередь, повторной отправки не будет")
         image_bytes, metadata = generate_local_txt2img(
